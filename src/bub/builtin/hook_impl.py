@@ -11,6 +11,7 @@ from bub.channels.message import ChannelMessage
 from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
+from bub.social import ConversationRef, OutboundAction, ReplyGrant, normalize_surface
 from bub.types import Envelope, MessageHandler, State
 
 AGENTS_FILE_NAME = "AGENTS.md"
@@ -123,55 +124,108 @@ class BuiltinImpl:
     @hookimpl
     async def on_error(self, stage: str, error: Exception, message: Envelope | None) -> None:
         if message is not None:
-            outbound = ChannelMessage(
-                session_id=field_of(message, "session_id", "unknown"),
-                channel=field_of(message, "channel", "default"),
-                chat_id=field_of(message, "chat_id", "default"),
-                content=f"An error occurred at stage '{stage}': {error}",
-                kind="error",
-                account_id=field_of(message, "account_id", "default"),
-                conversation=field_of(message, "conversation"),
-                reply_grant=field_of(message, "reply_grant"),
+            action = OutboundAction(
+                kind="reply_message" if self._reply_to_message_id(message) else "send_message",
+                conversation=self._conversation_for(message),
+                text=f"An error occurred at stage '{stage}': {error}",
+                reply_to_message_id=self._reply_to_message_id(message),
+                reply_grant=self._reply_grant_for(message),
                 metadata=field_of(message, "metadata", {}),
             )
-            await self.framework._hook_runtime.call_many("dispatch_outbound", message=outbound)
+            action.metadata["message_kind"] = "error"
+            await self.framework._hook_runtime.call_many("dispatch_outbound", action=action)
 
     @hookimpl
-    async def dispatch_outbound(self, message: Envelope) -> bool:
-        content = content_of(message)
-        session_id = field_of(message, "session_id")
-        if field_of(message, "output_channel") != "cli":
-            logger.info("session.run.outbound session_id={} content={}", session_id, content)
-        return await self.framework.dispatch_via_router(message)
+    async def dispatch_outbound(self, action: OutboundAction) -> bool:
+        target = action.conversation.platform if action.conversation is not None else "unknown"
+        chat_id = action.conversation.chat_id if action.conversation is not None else "unknown"
+        preview = (action.text or "").strip()
+        if preview and len(preview) > 100:
+            preview = preview[:97] + "..."
+        if target != "cli":
+            logger.info(
+                "session.run.outbound action_kind={} target={} chat_id={} text={}",
+                action.kind,
+                target,
+                chat_id,
+                preview,
+            )
+        return await self.framework.dispatch_via_router(action)
 
     @hookimpl
-    def render_outbound(
+    def render_actions(
         self,
         message: Envelope,
         session_id: str,
         state: State,
         model_output: str,
-    ) -> list[ChannelMessage]:
-        outbound = ChannelMessage(
-            session_id=session_id,
-            channel=field_of(message, "channel", "default"),
-            chat_id=field_of(message, "chat_id", "default"),
-            content=model_output,
-            output_channel=field_of(message, "output_channel", "default"),
-            kind=field_of(message, "kind", "normal"),
-            context=field_of(message, "context", {}),
-            account_id=field_of(message, "account_id", "default"),
-            message_id=field_of(message, "message_id"),
-            conversation=field_of(message, "conversation"),
-            sender=field_of(message, "sender"),
-            reply_grant=field_of(message, "reply_grant"),
-            attachments=field_of(message, "attachments", []),
-            metadata=field_of(message, "metadata", {}),
+    ) -> list[OutboundAction]:
+        action = OutboundAction(
+            kind="reply_message" if self._reply_to_message_id(message) else "send_message",
+            conversation=self._conversation_for(message),
+            text=model_output,
+            content_type=str(field_of(message, "content_type", "text")),
+            message_id=_string_or_none(field_of(message, "message_id")),
+            reply_to_message_id=self._reply_to_message_id(message),
+            reply_grant=self._reply_grant_for(message),
+            metadata={
+                "message_kind": str(field_of(message, "kind", "normal")),
+                **dict(field_of(message, "metadata", {}) or {}),
+            },
         )
-        return [outbound]
+        return [action]
 
     @hookimpl
     def provide_tape_store(self) -> TapeStore:
         from bub.builtin.store import FileTapeStore
 
         return FileTapeStore(directory=self.agent.settings.home / "tapes")
+
+    @staticmethod
+    def _conversation_for(message: Envelope) -> ConversationRef:
+        raw = field_of(message, "conversation")
+        if isinstance(raw, ConversationRef):
+            conversation = raw
+        elif isinstance(raw, dict):
+            conversation = ConversationRef.from_mapping(raw)
+        else:
+            conversation = ConversationRef(
+                platform=str(field_of(message, "output_channel", field_of(message, "channel", "default"))),
+                chat_id=str(field_of(message, "chat_id", "default")),
+                account_id=str(field_of(message, "account_id", "default")),
+                surface=normalize_surface(field_of(message, "surface", field_of(message, "chat_type", "unknown"))),
+                thread_id=_string_or_none(field_of(message, "thread_id")),
+                lane_id=_string_or_none(field_of(message, "lane_id")),
+                actor_id=_string_or_none(field_of(message, "actor_id")),
+                tenant_id=_string_or_none(field_of(message, "tenant_id")),
+                metadata=dict(field_of(message, "conversation_metadata", {}) or {}),
+            )
+        output_channel = field_of(message, "output_channel")
+        if output_channel:
+            conversation.platform = str(output_channel)
+        return conversation
+
+    @staticmethod
+    def _reply_grant_for(message: Envelope) -> ReplyGrant | None:
+        raw = field_of(message, "reply_grant")
+        if isinstance(raw, ReplyGrant):
+            return raw
+        if isinstance(raw, dict):
+            return ReplyGrant.from_mapping(raw)
+        return None
+
+    @classmethod
+    def _reply_to_message_id(cls, message: Envelope) -> str | None:
+        reply_to = field_of(message, "reply_to_message_id")
+        if reply_to is not None:
+            return str(reply_to)
+        reply_grant = cls._reply_grant_for(message)
+        if reply_grant is None:
+            return None
+        return reply_grant.reply_to_message_id
+
+
+def _string_or_none(value: object) -> str | None:
+    if value is None:
+        return None
+    return str(value)

@@ -21,6 +21,7 @@ from bub.social import (
     Attachment,
     ChannelCapabilities,
     ConversationRef,
+    OutboundAction,
     ParticipantRef,
     ReplyGrant,
     normalize_surface,
@@ -192,50 +193,34 @@ class TelegramChannel(Channel):
         self._typing_tasks.clear()
         logger.info("telegram.stopped")
 
-    async def send(self, message: ChannelMessage) -> None:
-        if message.actions:
-            await self._send_actions(message)
-            return
-        chat_id = message.chat_id
-        content = message.content
-        try:
-            data = json.loads(content)
-            text = data.get("message", "")
-        except json.JSONDecodeError:
-            text = content
-        if not text.strip():
-            return
-        await self._app.bot.send_message(chat_id=chat_id, text=text)
-
-    async def _send_actions(self, message: ChannelMessage) -> None:
-        for action in message.actions:
-            chat_id = action.conversation.chat_id if action.conversation is not None else message.chat_id
-            match action.kind:
-                case "send_message" | "reply_message":
-                    text = action.text or ""
-                    if not text.strip():
-                        continue
-                    kwargs: dict[str, Any] = {}
-                    reply_to = action.reply_to_message_id or (
-                        action.reply_grant.reply_to_message_id if action.reply_grant is not None else None
-                    )
-                    if reply_to is not None:
-                        with contextlib.suppress(ValueError):
-                            kwargs["reply_to_message_id"] = int(reply_to)
-                    await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
-                case "edit_message":
-                    text = action.text or ""
-                    if not text.strip() or action.message_id is None:
-                        continue
-                    await self._app.bot.edit_message_text(
-                        chat_id=chat_id,
-                        message_id=int(action.message_id),
-                        text=text,
-                    )
-                case "presence":
-                    await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
-                case _:
-                    logger.warning("telegram.send unsupported action kind={}", action.kind)
+    async def send(self, action: OutboundAction) -> None:
+        chat_id = action.conversation.chat_id if action.conversation is not None else "default"
+        match action.kind:
+            case "send_message" | "reply_message":
+                text = action.text or ""
+                if not text.strip():
+                    return
+                kwargs: dict[str, Any] = {}
+                reply_to = action.reply_to_message_id or (
+                    action.reply_grant.reply_to_message_id if action.reply_grant is not None else None
+                )
+                if reply_to is not None:
+                    with contextlib.suppress(ValueError):
+                        kwargs["reply_to_message_id"] = int(reply_to)
+                await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+            case "edit_message":
+                text = action.text or ""
+                if not text.strip() or action.message_id is None:
+                    return
+                await self._app.bot.edit_message_text(
+                    chat_id=chat_id,
+                    message_id=int(action.message_id),
+                    text=text,
+                )
+            case "presence":
+                await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
+            case _:
+                logger.warning("telegram.send unsupported action kind={}", action.kind)
 
     async def _on_start(self, update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message is None:

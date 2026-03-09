@@ -8,6 +8,7 @@ import pluggy
 from republic import AsyncTapeStore
 from republic.tape import TapeStore
 
+from bub.social import OutboundAction
 from bub.types import Envelope, MessageHandler, State
 
 if TYPE_CHECKING:
@@ -52,19 +53,19 @@ class BubHookSpecs:
         """Persist state updates after one model turn."""
 
     @hookspec
-    def render_outbound(
+    def render_actions(
         self,
         message: Envelope,
         session_id: str,
         state: State,
         model_output: str,
-    ) -> list[Envelope]:
-        """Render outbound messages from model output."""
+    ) -> list[OutboundAction]:
+        """Render outbound actions from model output."""
         raise NotImplementedError
 
     @hookspec
-    def dispatch_outbound(self, message: Envelope) -> bool:
-        """Dispatch one outbound message to external channel(s)."""
+    def dispatch_outbound(self, action: OutboundAction) -> bool:
+        """Dispatch one outbound action to external channel(s)."""
         raise NotImplementedError
 
     @hookspec

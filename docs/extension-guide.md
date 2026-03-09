@@ -102,8 +102,8 @@ Current `process_inbound()` hook usage:
 3. `build_prompt` (`call_first`)
 4. `run_model` (`call_first`)
 5. `save_state` (`call_many`, always executed in `finally`)
-6. `render_outbound` (`call_many`)
-7. `dispatch_outbound` (`call_many`, per outbound)
+6. `render_actions` (`call_many`)
+7. `dispatch_outbound` (`call_many`, per action)
 
 Other hook consumers:
 

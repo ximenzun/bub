@@ -6,14 +6,16 @@ from collections.abc import Callable, Coroutine
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
+from bub.social import OutboundAction
+
 type Envelope = Any
 type State = dict[str, Any]
 type MessageHandler = Callable[[Envelope], Coroutine[Any, Any, None]]
-type OutboundDispatcher = Callable[[Envelope], Coroutine[Any, Any, bool]]
+type OutboundDispatcher = Callable[[OutboundAction], Coroutine[Any, Any, bool]]
 
 
 class OutboundChannelRouter(Protocol):
-    async def dispatch(self, message: Envelope) -> bool: ...
+    async def dispatch(self, action: OutboundAction) -> bool: ...
 
 
 @dataclass(frozen=True)
@@ -23,4 +25,4 @@ class TurnResult:
     session_id: str
     prompt: str
     model_output: str
-    outbounds: list[Envelope] = field(default_factory=list)
+    outbound_actions: list[OutboundAction] = field(default_factory=list)

@@ -2,8 +2,7 @@ import asyncio
 from abc import ABC, abstractmethod
 from typing import ClassVar
 
-from bub.channels.message import ChannelMessage
-from bub.social import ChannelCapabilities, basic_channel_capabilities
+from bub.social import ChannelCapabilities, OutboundAction, basic_channel_capabilities
 
 
 class Channel(ABC):
@@ -29,7 +28,7 @@ class Channel(ABC):
         """Structured capability metadata for richer social-channel integrations."""
         return basic_channel_capabilities(self.name)
 
-    async def send(self, message: ChannelMessage) -> None:
+    async def send(self, action: OutboundAction) -> None:
         """Send a message to the channel. Optional to implement."""
         # Do nothing by default
         return

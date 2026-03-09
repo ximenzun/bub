@@ -9,6 +9,7 @@ from bub.builtin.hook_impl import AGENTS_FILE_NAME, DEFAULT_SYSTEM_PROMPT, Built
 from bub.builtin.store import FileTapeStore
 from bub.channels.message import ChannelMessage
 from bub.framework import BubFramework
+from bub.social import ConversationRef, OutboundAction
 
 
 class RecordingLifespan:
@@ -185,12 +186,12 @@ async def test_on_error_dispatches_outbound_message(tmp_path: Path) -> None:
 
     assert len(calls) == 1
     hook_name, kwargs = calls[0]
-    outbound = kwargs["message"]
+    outbound = kwargs["action"]
     assert hook_name == "dispatch_outbound"
-    assert outbound.channel == "cli"
-    assert outbound.chat_id == "room"
-    assert outbound.kind == "error"
-    assert outbound.content == "An error occurred at stage 'turn': bad"
+    assert outbound.kind == "send_message"
+    assert outbound.conversation == ConversationRef(platform="cli", chat_id="room", account_id="default")
+    assert outbound.metadata["message_kind"] == "error"
+    assert outbound.text == "An error occurred at stage 'turn': bad"
 
 
 @pytest.mark.asyncio
@@ -198,12 +199,16 @@ async def test_dispatch_outbound_uses_framework_router(tmp_path: Path) -> None:
     framework, impl, _ = _build_impl(tmp_path)
     dispatched: list[object] = []
 
-    async def dispatch_via_router(message: object) -> bool:
-        dispatched.append(message)
+    async def dispatch_via_router(action: object) -> bool:
+        dispatched.append(action)
         return True
 
     framework.dispatch_via_router = dispatch_via_router  # type: ignore[method-assign]
-    outbound = {"session_id": "session", "channel": "cli", "chat_id": "room", "content": "hello"}
+    outbound = OutboundAction(
+        kind="send_message",
+        conversation=ConversationRef(platform="cli", chat_id="room", account_id="default"),
+        text="hello",
+    )
 
     result = await impl.dispatch_outbound(outbound)
 
@@ -211,10 +216,10 @@ async def test_dispatch_outbound_uses_framework_router(tmp_path: Path) -> None:
     assert dispatched == [outbound]
 
 
-def test_render_outbound_preserves_message_metadata(tmp_path: Path) -> None:
+def test_render_actions_preserves_message_metadata(tmp_path: Path) -> None:
     _, impl, _ = _build_impl(tmp_path)
 
-    rendered = impl.render_outbound(
+    rendered = impl.render_actions(
         message={"channel": "telegram", "chat_id": "room", "kind": "command", "output_channel": "cli"},
         session_id="session",
         state={},
@@ -222,13 +227,11 @@ def test_render_outbound_preserves_message_metadata(tmp_path: Path) -> None:
     )
 
     assert len(rendered) == 1
-    outbound = rendered[0]
-    assert outbound.session_id == "session"
-    assert outbound.channel == "telegram"
-    assert outbound.chat_id == "room"
-    assert outbound.output_channel == "cli"
-    assert outbound.kind == "command"
-    assert outbound.content == "result"
+    action = rendered[0]
+    assert action.kind == "send_message"
+    assert action.conversation == ConversationRef(platform="cli", chat_id="room", account_id="default")
+    assert action.metadata["message_kind"] == "command"
+    assert action.text == "result"
 
 
 def test_provide_tape_store_uses_agent_home_directory(tmp_path: Path) -> None:

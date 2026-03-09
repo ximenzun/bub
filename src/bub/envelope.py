@@ -34,7 +34,7 @@ def normalize_envelope(message: Envelope) -> dict[str, Any]:
 
 
 def unpack_batch(batch: Any) -> list[Envelope]:
-    """Normalize one render_outbound return value to a list of envelopes."""
+    """Normalize one hook batch return value to a list of items."""
 
     if batch is None:
         return []

@@ -18,7 +18,8 @@ from bub.builtin.tape import TapeInfo
 from bub.channels.base import Channel
 from bub.channels.cli.renderer import CliRenderer
 from bub.channels.message import ChannelMessage
-from bub.envelope import content_of, field_of
+from bub.envelope import field_of
+from bub.social import OutboundAction
 from bub.tools import REGISTRY
 from bub.types import MessageHandler
 
@@ -65,14 +66,15 @@ class CliChannel(Channel):
             with contextlib.suppress(asyncio.CancelledError):
                 await self._main_task
 
-    async def send(self, message: ChannelMessage) -> None:
-        match message.kind:
+    async def send(self, action: OutboundAction) -> None:
+        content = action.text or ""
+        match action.metadata.get("message_kind", "normal"):
             case "error":
-                self._renderer.error(content_of(message))
+                self._renderer.error(content)
             case "command":
-                self._renderer.command_output(content_of(message))
+                self._renderer.command_output(content)
             case _:
-                self._renderer.assistant_output(content_of(message))
+                self._renderer.assistant_output(content)
 
     async def _main_loop(self) -> None:
         self._renderer.welcome(model=self._agent.settings.model, workspace=str(self._workspace))
