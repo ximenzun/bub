@@ -410,9 +410,25 @@ class OutboundAction:
     reply_to_message_id: str | None = None
     reply_grant: ReplyGrant | None = None
     attachments: list[Attachment] = field(default_factory=list)
+    mentions: list[MentionTarget] = field(default_factory=list)
     live_surface: LiveSurfaceRef | None = None
     reaction: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
+
+    def __post_init__(self) -> None:
+        if isinstance(self.conversation, Mapping):
+            self.conversation = ConversationRef.from_mapping(self.conversation)
+        if isinstance(self.reply_grant, Mapping):
+            self.reply_grant = ReplyGrant.from_mapping(self.reply_grant)
+        self.attachments = [
+            item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item)) for item in self.attachments
+        ]
+        self.mentions = [
+            item if isinstance(item, MentionTarget) else MentionTarget.from_mapping(_mapping_of(item))
+            for item in self.mentions
+        ]
+        if isinstance(self.live_surface, Mapping):
+            self.live_surface = LiveSurfaceRef.from_mapping(self.live_surface)
 
     @classmethod
     def from_mapping(
@@ -443,6 +459,7 @@ class OutboundAction:
         reply_grant = data.get("reply_grant")
         live_surface = data.get("live_surface")
         attachments = data.get("attachments") or []
+        mentions = data.get("mentions") or []
         return cls(
             kind=kind,  # type: ignore[arg-type]
             conversation=conversation_value
@@ -461,6 +478,10 @@ class OutboundAction:
             else None,
             attachments=[
                 item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item)) for item in attachments
+            ],
+            mentions=[
+                item if isinstance(item, MentionTarget) else MentionTarget.from_mapping(_mapping_of(item))
+                for item in mentions
             ],
             live_surface=live_surface
             if isinstance(live_surface, LiveSurfaceRef)

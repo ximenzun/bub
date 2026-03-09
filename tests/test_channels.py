@@ -11,6 +11,7 @@ from bub.channels.handler import BufferedMessageHandler
 from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel
+from bub.channels.wecom_webhook import WeComWebhookChannel
 from bub.social import ConversationRef, OutboundAction, ReplyGrant
 
 
@@ -422,6 +423,84 @@ async def test_telegram_channel_send_supports_reply_and_edit_actions() -> None:
         ("send", {"chat_id": "42", "text": "hello", "reply_to_message_id": 5}),
         ("edit", {"chat_id": "42", "message_id": 9, "text": "updated"}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_wecom_webhook_channel_send_text_with_mentions(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = WeComWebhookChannel()
+    channel._settings.webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
+    sent: list[dict[str, object]] = []
+
+    async def post_json(payload: dict[str, object]) -> None:
+        sent.append(payload)
+
+    monkeypatch.setattr(channel, "_post_json", post_json)
+
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="wecom", route_channel="wecom_webhook", chat_id="room"),
+            text="hello",
+            mentions=[
+                {"kind": "user_id", "value": "zhangsan"},
+                {"kind": "mobile", "value": "13800001111"},
+                {"kind": "all", "value": "@all"},
+            ],
+        )
+    )
+
+    assert sent == [
+        {
+            "msgtype": "text",
+            "text": {
+                "content": "hello",
+                "mentioned_list": ["zhangsan", "@all"],
+                "mentioned_mobile_list": ["13800001111", "@all"],
+            },
+        }
+    ]
+
+
+@pytest.mark.asyncio
+async def test_wecom_webhook_channel_send_file_uploads_media_first(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    channel = WeComWebhookChannel()
+    channel._settings.webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
+    sent: list[dict[str, object]] = []
+    file_path = tmp_path / "report.pdf"
+
+    async def upload_media(media_type: str, action: OutboundAction) -> str:
+        assert media_type == "file"
+        assert action.text == str(file_path)
+        return "MEDIA123"
+
+    async def post_json(payload: dict[str, object]) -> None:
+        sent.append(payload)
+
+    monkeypatch.setattr(channel, "_upload_media", upload_media)
+    monkeypatch.setattr(channel, "_post_json", post_json)
+
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="wecom", route_channel="wecom_webhook", chat_id="room"),
+            text=str(file_path),
+            content_type="file",
+        )
+    )
+
+    assert sent == [{"msgtype": "file", "file": {"media_id": "MEDIA123"}}]
+
+
+def test_wecom_webhook_channel_upload_url_derives_key_and_type() -> None:
+    channel = WeComWebhookChannel()
+    channel._settings.webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
+
+    assert (
+        channel._upload_url("voice")
+        == "https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key=test-key&type=voice"
+    )
 
 
 def _async_return(value):
