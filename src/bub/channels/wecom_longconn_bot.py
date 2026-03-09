@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from collections.abc import Sequence
 
 from pydantic import Field
@@ -77,7 +78,11 @@ class WeComLongConnBotChannel(BridgeChannel):
 
     @property
     def command(self) -> Sequence[str]:
-        return split_command(self._settings.command)
+        if explicit := split_command(self._settings.command):
+            return explicit
+        if self._settings.bot_id and self._settings.secret:
+            return [sys.executable, "-m", "bub.channels.wecom_longconn_bridge", "--channel", self.name]
+        return []
 
     @property
     def ready_timeout_seconds(self) -> float:

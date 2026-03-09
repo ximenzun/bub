@@ -13,6 +13,7 @@ from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel
 from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
+from bub.channels.wecom_longconn_bridge import translate_action_to_wecom_request
 from bub.channels.wecom_webhook import WeComWebhookChannel
 from bub.social import ConversationRef, OutboundAction, ReplyGrant
 
@@ -516,8 +517,8 @@ async def test_wecom_longconn_bot_channel_start_and_send_via_bridge() -> None:
     channel._settings = channel._settings.model_copy(
         update={
             "command": (
-        f"{sys.executable} -m bub.channels.dev_bridge "
-        "--channel wecom_longconn_bot --chat-id chat-1 --boot-message 'hello from bridge' --echo-actions --require-config"
+                f"{sys.executable} -m bub.channels.wecom_longconn_bridge "
+                "--channel wecom_longconn_bot --chat-id chat-1 --boot-message 'hello from bridge' --echo-actions"
             ),
             "bot_id": "bot-id",
             "secret": "token-value",
@@ -587,6 +588,32 @@ def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
     ]
     assert channel.startup_frames[0]["type"] == "configure"
     assert channel.startup_frames[0]["config"]["bot_id"] == "bot-id"
+
+
+def test_wecom_longconn_bot_channel_uses_bundled_bridge_when_credentials_present() -> None:
+    channel = WeComLongConnBotChannel(lambda message: None)
+    channel._settings = channel._settings.model_copy(update={"bot_id": "bot-id", "secret": "token-value"})
+
+    command = list(channel.command)
+
+    assert command[:3] == [sys.executable, "-m", "bub.channels.wecom_longconn_bridge"]
+    assert command[-2:] == ["--channel", "wecom_longconn_bot"]
+
+
+def test_wecom_longconn_bridge_translates_reply_and_mentions() -> None:
+    action = OutboundAction(
+        kind="reply_message",
+        conversation=ConversationRef(platform="wecom", route_channel="wecom_longconn_bot", chat_id="room"),
+        text="hello",
+        reply_to_message_id="MSG-1",
+        mentions=[{"kind": "user_id", "value": "zhangsan"}, {"kind": "all", "value": "@all"}],
+    )
+
+    request = translate_action_to_wecom_request(action)
+
+    assert request["mode"] == "passive_reply"
+    assert request["msgtype"] == "text"
+    assert request["payload"]["text"]["mentioned_list"] == ["zhangsan", "@all"]
 
 
 def _async_return(value):
