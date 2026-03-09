@@ -5,6 +5,7 @@ import contextlib
 import json
 import shlex
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Any
 
 from loguru import logger
@@ -35,6 +36,7 @@ class BridgeChannel(Channel):
         if not command:
             logger.info("bridge.start channel={} configured=false", self.name)
             return
+        await self.prepare()
         self._ready.clear()
         self._bridge_info = {}
         self._bridge_state = None
@@ -88,6 +90,9 @@ class BridgeChannel(Channel):
     @property
     def startup_frames(self) -> list[dict[str, Any]]:
         return []
+
+    async def prepare(self) -> None:
+        return
 
     @property
     def ready_timeout_seconds(self) -> float:
@@ -183,3 +188,17 @@ def split_command(value: str | None) -> list[str]:
     if value is None:
         return []
     return shlex.split(value)
+
+
+async def run_command(command: Sequence[str], *, cwd: Path | None = None) -> None:
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        cwd=str(cwd) if cwd is not None else None,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE,
+    )
+    stdout, stderr = await process.communicate()
+    if process.returncode != 0:
+        raise RuntimeError(
+            f"command failed exit={process.returncode}: {(stderr or stdout).decode('utf-8', errors='replace').strip()}"
+        )

@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -13,7 +12,6 @@ from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel
 from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
-from bub.channels.wecom_longconn_bridge import translate_action_to_wecom_request
 from bub.channels.wecom_webhook import WeComWebhookChannel
 from bub.social import ConversationRef, OutboundAction, ReplyGrant
 
@@ -507,7 +505,7 @@ def test_wecom_webhook_channel_upload_url_derives_key_and_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wecom_longconn_bot_channel_start_and_send_via_bridge() -> None:
+async def test_wecom_longconn_bot_channel_start_and_send_via_bundled_mock_bridge() -> None:
     received: list[ChannelMessage] = []
 
     async def on_receive(message: ChannelMessage) -> None:
@@ -517,8 +515,9 @@ async def test_wecom_longconn_bot_channel_start_and_send_via_bridge() -> None:
     channel._settings = channel._settings.model_copy(
         update={
             "command": (
-                f"{sys.executable} -m bub.channels.wecom_longconn_bridge "
-                "--channel wecom_longconn_bot --chat-id chat-1 --boot-message 'hello from bridge' --echo-actions"
+                "node "
+                f"{WeComLongConnBotChannel._bridge_script_path()} "
+                "--channel wecom_longconn_bot --mock --echo-actions"
             ),
             "bot_id": "bot-id",
             "secret": "token-value",
@@ -557,8 +556,7 @@ async def test_wecom_longconn_bot_channel_start_and_send_via_bridge() -> None:
 
     assert channel.is_ready is False
     assert received[0].channel == "wecom_longconn_bot"
-    assert received[0].content == "hello from bridge"
-    assert received[1].content == "echo: ping"
+    assert received[0].content == "echo: ping"
 
 
 def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
@@ -596,24 +594,18 @@ def test_wecom_longconn_bot_channel_uses_bundled_bridge_when_credentials_present
 
     command = list(channel.command)
 
-    assert command[:3] == [sys.executable, "-m", "bub.channels.wecom_longconn_bridge"]
+    assert command[0] == "node"
+    assert command[1].endswith("src/bub/channels/node/wecom_longconn_bridge.mjs")
     assert command[-2:] == ["--channel", "wecom_longconn_bot"]
 
 
-def test_wecom_longconn_bridge_translates_reply_and_mentions() -> None:
-    action = OutboundAction(
-        kind="reply_message",
-        conversation=ConversationRef(platform="wecom", route_channel="wecom_longconn_bot", chat_id="room"),
-        text="hello",
-        reply_to_message_id="MSG-1",
-        mentions=[{"kind": "user_id", "value": "zhangsan"}, {"kind": "all", "value": "@all"}],
+def test_wecom_longconn_bot_channel_appends_mock_flag_for_bundled_bridge() -> None:
+    channel = WeComLongConnBotChannel(lambda message: None)
+    channel._settings = channel._settings.model_copy(
+        update={"bot_id": "bot-id", "secret": "token-value", "mock": True}
     )
 
-    request = translate_action_to_wecom_request(action)
-
-    assert request["mode"] == "passive_reply"
-    assert request["msgtype"] == "text"
-    assert request["payload"]["text"]["mentioned_list"] == ["zhangsan", "@all"]
+    assert list(channel.command)[-1] == "--mock"
 
 
 def _async_return(value):
