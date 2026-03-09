@@ -129,6 +129,10 @@ class BuiltinImpl:
                 chat_id=field_of(message, "chat_id", "default"),
                 content=f"An error occurred at stage '{stage}': {error}",
                 kind="error",
+                account_id=field_of(message, "account_id", "default"),
+                conversation=field_of(message, "conversation"),
+                reply_grant=field_of(message, "reply_grant"),
+                metadata=field_of(message, "metadata", {}),
             )
             await self.framework._hook_runtime.call_many("dispatch_outbound", message=outbound)
 
@@ -155,6 +159,14 @@ class BuiltinImpl:
             content=model_output,
             output_channel=field_of(message, "output_channel", "default"),
             kind=field_of(message, "kind", "normal"),
+            context=field_of(message, "context", {}),
+            account_id=field_of(message, "account_id", "default"),
+            message_id=field_of(message, "message_id"),
+            conversation=field_of(message, "conversation"),
+            sender=field_of(message, "sender"),
+            reply_grant=field_of(message, "reply_grant"),
+            attachments=field_of(message, "attachments", []),
+            metadata=field_of(message, "metadata", {}),
         )
         return [outbound]
 
