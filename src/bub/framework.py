@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -15,6 +16,7 @@ from republic.tape import TapeStore
 from bub.envelope import content_of, field_of, unpack_batch
 from bub.hook_runtime import HookRuntime
 from bub.hookspecs import BUB_HOOK_NAMESPACE, BubHookSpecs
+from bub.social import ConversationRef, OutboundAction, ReplyGrant, normalize_surface
 from bub.types import Envelope, MessageHandler, OutboundChannelRouter, TurnResult
 
 if TYPE_CHECKING:
@@ -125,10 +127,15 @@ class BubFramework:
                     model_output=model_output,
                 )
 
-            outbounds = await self._collect_outbounds(inbound, session_id, state, model_output)
-            for outbound in outbounds:
-                await self._hook_runtime.call_many("dispatch_outbound", message=outbound)
-            return TurnResult(session_id=session_id, prompt=prompt, model_output=model_output, outbounds=outbounds)
+            outbound_actions = await self._collect_outbound_actions(inbound, session_id, state, model_output)
+            for action in outbound_actions:
+                await self._hook_runtime.call_many("dispatch_outbound", action=action)
+            return TurnResult(
+                session_id=session_id,
+                prompt=prompt,
+                model_output=model_output,
+                outbound_actions=outbound_actions,
+            )
         except Exception as exc:
             await self._hook_runtime.notify_error(stage="turn", error=exc, message=inbound)
             raise
@@ -141,10 +148,10 @@ class BubFramework:
     def bind_outbound_router(self, router: OutboundChannelRouter | None) -> None:
         self._outbound_router = router
 
-    async def dispatch_via_router(self, message: Envelope) -> bool:
+    async def dispatch_via_router(self, action: OutboundAction) -> bool:
         if self._outbound_router is None:
             return False
-        return await self._outbound_router.dispatch(message)
+        return await self._outbound_router.dispatch(action)
 
     @staticmethod
     def _default_session_id(message: Envelope) -> str:
@@ -155,37 +162,83 @@ class BubFramework:
         chat_id = str(field_of(message, "chat_id", "default"))
         return f"{channel}:{chat_id}"
 
-    async def _collect_outbounds(
+    async def _collect_outbound_actions(
         self,
         message: Envelope,
         session_id: str,
         state: dict[str, Any],
         model_output: str,
-    ) -> list[Envelope]:
+    ) -> list[OutboundAction]:
         batches = await self._hook_runtime.call_many(
-            "render_outbound",
+            "render_actions",
             message=message,
             session_id=session_id,
             state=state,
             model_output=model_output,
         )
-        outbounds: list[Envelope] = []
+        outbound_actions: list[OutboundAction] = []
         for batch in batches:
-            outbounds.extend(unpack_batch(batch))
-        if outbounds:
-            return outbounds
+            for item in unpack_batch(batch):
+                if item is None:
+                    continue
+                if isinstance(item, OutboundAction):
+                    outbound_actions.append(item)
+                    continue
+                if isinstance(item, Mapping):
+                    outbound_actions.append(OutboundAction.from_mapping(item))
+                    continue
+                raise TypeError(f"Unsupported outbound action type: {type(item)!r}")
+        if outbound_actions:
+            return outbound_actions
 
-        fallback: dict[str, Any] = {
-            "content": model_output,
-            "session_id": session_id,
-        }
-        channel = field_of(message, "channel")
-        chat_id = field_of(message, "chat_id")
-        if channel is not None:
-            fallback["channel"] = channel
-        if chat_id is not None:
-            fallback["chat_id"] = chat_id
-        return [fallback]
+        return [self._default_outbound_action(message, model_output)]
+
+    @staticmethod
+    def _default_outbound_action(message: Envelope, model_output: str) -> OutboundAction:
+        raw_conversation = field_of(message, "conversation")
+        if isinstance(raw_conversation, ConversationRef):
+            conversation = raw_conversation
+        elif isinstance(raw_conversation, Mapping):
+            conversation = ConversationRef.from_mapping(raw_conversation)
+        else:
+            platform = str(field_of(message, "output_channel", field_of(message, "channel", "default")))
+            conversation = ConversationRef(
+                platform=platform,
+                chat_id=str(field_of(message, "chat_id", "default")),
+                account_id=str(field_of(message, "account_id", "default")),
+                surface=normalize_surface(field_of(message, "surface", field_of(message, "chat_type", "unknown"))),
+                thread_id=_string_or_none(field_of(message, "thread_id")),
+                lane_id=_string_or_none(field_of(message, "lane_id")),
+                actor_id=_string_or_none(field_of(message, "actor_id")),
+                tenant_id=_string_or_none(field_of(message, "tenant_id")),
+                metadata=dict(field_of(message, "conversation_metadata", {}) or {}),
+            )
+
+        raw_reply_grant = field_of(message, "reply_grant")
+        if isinstance(raw_reply_grant, ReplyGrant):
+            reply_grant = raw_reply_grant
+        elif isinstance(raw_reply_grant, Mapping):
+            reply_grant = ReplyGrant.from_mapping(raw_reply_grant)
+        else:
+            reply_grant = None
+
+        reply_to_message_id = _string_or_none(field_of(message, "reply_to_message_id"))
+        if reply_to_message_id is None and reply_grant is not None:
+            reply_to_message_id = reply_grant.reply_to_message_id
+        kind = "reply_message" if reply_to_message_id else "send_message"
+        return OutboundAction(
+            kind=kind,
+            conversation=conversation,
+            text=model_output,
+            content_type=str(field_of(message, "content_type", "text")),
+            message_id=_string_or_none(field_of(message, "message_id")),
+            reply_to_message_id=reply_to_message_id,
+            reply_grant=reply_grant,
+            metadata={
+                "message_kind": str(field_of(message, "kind", "normal")),
+                **dict(field_of(message, "metadata", {}) or {}),
+            },
+        )
 
     def get_channels(self, message_handler: MessageHandler) -> dict[str, Channel]:
         channels: dict[str, Channel] = {}
@@ -204,3 +257,9 @@ class BubFramework:
             for result in reversed(self._hook_runtime.call_many_sync("system_prompt", prompt=prompt, state=state))
             if result
         )
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    return str(value)

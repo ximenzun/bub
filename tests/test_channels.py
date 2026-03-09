@@ -11,14 +11,14 @@ from bub.channels.handler import BufferedMessageHandler
 from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel
-from bub.social import ConversationRef, ReplyGrant
+from bub.social import ConversationRef, OutboundAction, ReplyGrant
 
 
 class FakeChannel:
     def __init__(self, name: str, *, needs_debounce: bool = False) -> None:
         self.name = name
         self._needs_debounce = needs_debounce
-        self.sent: list[ChannelMessage] = []
+        self.sent: list[OutboundAction] = []
         self.started = False
         self.stopped = False
 
@@ -33,8 +33,8 @@ class FakeChannel:
     async def stop(self) -> None:
         self.stopped = True
 
-    async def send(self, message: ChannelMessage) -> None:
-        self.sent.append(message)
+    async def send(self, action: OutboundAction) -> None:
+        self.sent.append(action)
 
 
 class FakeFramework:
@@ -111,26 +111,23 @@ async def test_channel_manager_dispatch_uses_output_channel_and_preserves_metada
     cli_channel = FakeChannel("cli")
     manager = ChannelManager(FakeFramework({"cli": cli_channel}), enabled_channels=["cli"])
 
-    result = await manager.dispatch({
-        "session_id": "session",
-        "channel": "telegram",
-        "output_channel": "cli",
-        "chat_id": "room",
-        "content": "hello",
-        "kind": "command",
-        "context": {"source": "test"},
-    })
+    result = await manager.dispatch(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="cli", chat_id="room", account_id="default"),
+            text="hello",
+            metadata={"message_kind": "command", "source": "test"},
+        )
+    )
 
     assert result is True
     assert len(cli_channel.sent) == 1
-    outbound = cli_channel.sent[0]
-    assert outbound.channel == "cli"
-    assert outbound.chat_id == "room"
-    assert outbound.content == "hello"
-    assert outbound.kind == "command"
-    assert outbound.context["source"] == "test"
-    assert outbound.actions[0].kind == "send_message"
-    assert outbound.conversation == ConversationRef(platform="cli", chat_id="room", account_id="default")
+    action = cli_channel.sent[0]
+    assert action.kind == "send_message"
+    assert action.text == "hello"
+    assert action.metadata["message_kind"] == "command"
+    assert action.metadata["source"] == "test"
+    assert action.conversation == ConversationRef(platform="cli", chat_id="room", account_id="default")
 
 
 def test_channel_manager_enabled_channels_excludes_cli_from_all() -> None:
@@ -206,9 +203,29 @@ async def test_cli_channel_send_routes_by_message_kind() -> None:
         assistant_output=lambda content: events.append(("assistant", content)),
     )
 
-    await channel.send(_message("bad", channel="cli", kind="error"))
-    await channel.send(_message("ok", channel="cli", kind="command"))
-    await channel.send(_message("hi", channel="cli"))
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="cli", chat_id="local"),
+            text="bad",
+            metadata={"message_kind": "error"},
+        )
+    )
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="cli", chat_id="local"),
+            text="ok",
+            metadata={"message_kind": "command"},
+        )
+    )
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="cli", chat_id="local"),
+            text="hi",
+        )
+    )
 
     assert events == [("error", "bad"), ("command", "ok"), ("assistant", "hi")]
 
@@ -269,8 +286,20 @@ async def test_telegram_channel_send_extracts_json_message_and_skips_blank() -> 
 
     channel._app = SimpleNamespace(bot=SimpleNamespace(send_message=send_message))
 
-    await channel.send(_message('{"message":"hello"}', chat_id="42"))
-    await channel.send(_message("   ", chat_id="42"))
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="telegram", chat_id="42"),
+            text="hello",
+        )
+    )
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="telegram", chat_id="42"),
+            text="   ",
+        )
+    )
 
     assert sent == [("42", "hello")]
 
@@ -342,34 +371,26 @@ async def test_telegram_channel_send_supports_reply_and_edit_actions() -> None:
     channel._app = SimpleNamespace(bot=SimpleNamespace(send_message=send_message, edit_message_text=edit_message_text))
 
     await channel.send(
-        _message(
-            "ignored",
-            chat_id="42",
-            channel="telegram",
-            session_id="telegram:42",
-            kind="normal",
+        OutboundAction(
+            kind="send_message",
+            text="ignored",
+            conversation=ConversationRef(platform="telegram", chat_id="42", surface="direct"),
         )
     )
     await channel.send(
-        ChannelMessage(
-            session_id="telegram:42",
-            channel="telegram",
-            chat_id="42",
-            content="ignored",
-            actions=[
-                {
-                    "kind": "reply_message",
-                    "text": "hello",
-                    "reply_to_message_id": "5",
-                    "conversation": {"platform": "telegram", "chat_id": "42", "surface": "direct"},
-                },
-                {
-                    "kind": "edit_message",
-                    "text": "updated",
-                    "message_id": "9",
-                    "conversation": {"platform": "telegram", "chat_id": "42", "surface": "direct"},
-                },
-            ],
+        OutboundAction(
+            kind="reply_message",
+            text="hello",
+            reply_to_message_id="5",
+            conversation=ConversationRef(platform="telegram", chat_id="42", surface="direct"),
+        )
+    )
+    await channel.send(
+        OutboundAction(
+            kind="edit_message",
+            text="updated",
+            message_id="9",
+            conversation=ConversationRef(platform="telegram", chat_id="42", surface="direct"),
         )
     )
 

@@ -18,9 +18,9 @@
 4. Build prompt via `build_prompt(message, session_id, state)` (fallback to inbound `content` if empty).
 5. Execute `run_model(prompt, session_id, state)`.
 6. Always execute `save_state(...)` in a `finally` block.
-7. Render outbound batches via `render_outbound(...)`, then flatten them.
-8. If no outbound exists, emit one fallback outbound.
-9. Dispatch each outbound via `dispatch_outbound(message)`.
+7. Render outbound action batches via `render_actions(...)`, then flatten them.
+8. If no outbound action exists, emit one fallback `OutboundAction`.
+9. Dispatch each outbound action via `dispatch_outbound(action)`.
 
 ## Hook Priority Semantics
 

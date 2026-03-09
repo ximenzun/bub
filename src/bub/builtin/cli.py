@@ -4,12 +4,13 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 import typer
 
 from bub.channels.message import ChannelMessage
-from bub.envelope import field_of
 from bub.framework import BubFramework
+from bub.social import to_primitive
 
 app = typer.Typer()
 
@@ -34,11 +35,12 @@ def run(
     )
 
     result = asyncio.run(framework.process_inbound(inbound))
-    for outbound in result.outbounds:
-        rendered = str(field_of(outbound, "content", ""))
-        target_channel = str(field_of(outbound, "channel", "stdout"))
-        target_chat = str(field_of(outbound, "chat_id", "local"))
-        typer.echo(f"[{target_channel}:{target_chat}]\n{rendered}")
+    for action in result.outbound_actions:
+        conversation = action.conversation
+        target_channel = conversation.platform if conversation is not None else "stdout"
+        target_chat = conversation.chat_id if conversation is not None else "local"
+        rendered = action.text or json.dumps(to_primitive(action), ensure_ascii=False)
+        typer.echo(f"[{target_channel}:{target_chat}:{action.kind}]\n{rendered}")
 
 
 def list_hooks(ctx: typer.Context) -> None:

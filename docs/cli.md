@@ -4,7 +4,7 @@
 
 ## `bub run`
 
-Run one inbound message through the full framework pipeline and print outbounds.
+Run one inbound message through the full framework pipeline and print outbound actions.
 
 ```bash
 uv run bub run "hello" --channel cli --chat-id local
@@ -70,9 +70,9 @@ uv run bub chat --chat-id local --session-id cli:local
 ## Notes
 
 - `--workspace` is parsed before the subcommand, for example `uv run bub --workspace /repo chat`.
-- `run` prints each outbound as:
+- `run` prints each outbound action as:
 
 ```text
-[channel:chat_id]
+[channel:chat_id:action_kind]
 content
 ```

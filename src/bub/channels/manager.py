@@ -9,10 +9,9 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 from bub.channels.base import Channel
 from bub.channels.handler import BufferedMessageHandler
 from bub.channels.message import ChannelMessage
-from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
-from bub.social.compat import attachments_of, conversation_of, outbound_actions_of, reply_grant_of
-from bub.types import Envelope, MessageHandler
+from bub.social import OutboundAction
+from bub.types import MessageHandler
 from bub.utils import wait_until_stopped
 
 
@@ -72,70 +71,14 @@ class ChannelManager:
     def get_channel(self, name: str) -> Channel | None:
         return self._channels.get(name)
 
-    async def dispatch(self, message: Envelope) -> bool:
-        channel_name = field_of(message, "output_channel", field_of(message, "channel"))
-        if channel_name is None:
+    async def dispatch(self, action: OutboundAction) -> bool:
+        if action.conversation is None:
             return False
-
-        channel_key = str(channel_name)
+        channel_key = action.conversation.platform
         channel = self.get_channel(channel_key)
         if channel is None:
             return False
-        chat_id = str(field_of(message, "chat_id", "default"))
-        account_id = str(field_of(message, "account_id", "default"))
-        reply_grant = reply_grant_of(message)
-        attachments = attachments_of(message)
-        raw_conversation = field_of(message, "conversation")
-        if raw_conversation is None:
-            conversation = conversation_of(
-                {
-                    "channel": channel_key,
-                    "chat_id": chat_id,
-                    "account_id": account_id,
-                    "surface": field_of(message, "surface", field_of(message, "chat_type", "unknown")),
-                    "thread_id": field_of(message, "thread_id"),
-                    "lane_id": field_of(message, "lane_id"),
-                    "actor_id": field_of(message, "actor_id"),
-                    "tenant_id": field_of(message, "tenant_id"),
-                    "conversation_metadata": field_of(message, "conversation_metadata", {}),
-                },
-                default_platform=channel_key,
-                default_chat_id=chat_id,
-            )
-        else:
-            conversation = conversation_of(message, default_platform=channel_key, default_chat_id=chat_id)
-        if field_of(message, "actions") is None:
-            actions = outbound_actions_of(
-                {
-                    "conversation": conversation,
-                    "content": content_of(message),
-                    "content_type": field_of(message, "content_type", "text"),
-                    "reply_grant": reply_grant,
-                    "reply_to_message_id": field_of(message, "reply_to_message_id"),
-                    "attachments": attachments,
-                    "metadata": field_of(message, "metadata", {}),
-                },
-                default_platform=channel_key,
-            )
-        else:
-            actions = outbound_actions_of(message, default_platform=channel_key)
-
-        outbound = ChannelMessage(
-            session_id=str(field_of(message, "session_id", f"{channel_key}:default")),
-            channel=channel_key,
-            chat_id=chat_id,
-            content=content_of(message),
-            context=field_of(message, "context", {}),
-            kind=field_of(message, "kind", "normal"),
-            account_id=account_id,
-            message_id=field_of(message, "message_id"),
-            conversation=conversation,
-            reply_grant=reply_grant,
-            attachments=attachments,
-            actions=actions,
-            metadata=dict(field_of(message, "metadata", {}) or {}),
-        )
-        await channel.send(outbound)
+        await channel.send(action)
         return True
 
     def enabled_channels(self) -> list[Channel]:

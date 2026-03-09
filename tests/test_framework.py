@@ -2,12 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 
+import pytest
 import typer
 from typer.testing import CliRunner
 
 from bub.channels.base import Channel
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
+from bub.social import ConversationRef, OutboundAction
 
 
 class NamedChannel(Channel):
@@ -109,3 +111,39 @@ def test_builtin_cli_exposes_gateway_and_keeps_message_hidden_alias() -> None:
     assert alias_result.exit_code == 0
     assert "bub message" in alias_result.stdout
     assert "Start message listeners" in alias_result.stdout
+
+
+@pytest.mark.asyncio
+async def test_process_inbound_falls_back_to_native_outbound_action() -> None:
+    framework = BubFramework()
+
+    class Plugin:
+        @hookimpl
+        def resolve_session(self, message):
+            return "cli:room"
+
+        @hookimpl
+        def load_state(self, message, session_id):
+            return {}
+
+        @hookimpl
+        def build_prompt(self, message, session_id, state):
+            return "prompt"
+
+        @hookimpl
+        async def run_model(self, prompt, session_id, state):
+            return "hello"
+
+    framework._plugin_manager.register(Plugin(), name="plugin")
+
+    result = await framework.process_inbound({"channel": "cli", "chat_id": "room", "content": "ignored"})
+
+    assert result.outbound_actions == [
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="cli", chat_id="room", account_id="default"),
+            text="hello",
+            content_type="text",
+            metadata={"message_kind": "normal"},
+        )
+    ]
