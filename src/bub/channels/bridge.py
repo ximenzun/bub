@@ -12,7 +12,7 @@ from loguru import logger
 from bub.channels.base import Channel
 from bub.channels.bridge_protocol import BRIDGE_PROTOCOL_VERSION, build_action_frame
 from bub.channels.message import ChannelMessage
-from bub.social import OutboundAction
+from bub.social import OutboundAction, ProvisioningInfo
 from bub.types import MessageHandler
 
 
@@ -27,6 +27,8 @@ class BridgeChannel(Channel):
         self._stderr_task: asyncio.Task | None = None
         self._ready = asyncio.Event()
         self._bridge_info: dict[str, Any] = {}
+        self._bridge_state: str | None = None
+        self._bridge_provisioning: ProvisioningInfo | None = None
 
     async def start(self, stop_event: asyncio.Event) -> None:
         command = self.command
@@ -35,6 +37,8 @@ class BridgeChannel(Channel):
             return
         self._ready.clear()
         self._bridge_info = {}
+        self._bridge_state = None
+        self._bridge_provisioning = None
         self._process = await asyncio.create_subprocess_exec(
             *command,
             stdin=asyncio.subprocess.PIPE,
@@ -43,6 +47,8 @@ class BridgeChannel(Channel):
         )
         self._stdout_task = asyncio.create_task(self._stdout_loop())
         self._stderr_task = asyncio.create_task(self._stderr_loop())
+        for frame in self.startup_frames:
+            await self._send_frame(frame)
         logger.info("bridge.start channel={} command={}", self.name, command)
         with contextlib.suppress(TimeoutError):
             async with asyncio.timeout(self.ready_timeout_seconds):
@@ -65,21 +71,23 @@ class BridgeChannel(Channel):
                     await self._process.wait()
             self._process = None
         self._ready.clear()
+        self._bridge_state = None
+        self._bridge_provisioning = None
         logger.info("bridge.stopped channel={}", self.name)
 
     async def send(self, action: OutboundAction) -> None:
-        if self._process is None or self._process.stdin is None:
-            raise RuntimeError(f"{self.name} bridge is not running.")
         if not self._ready.is_set():
             async with asyncio.timeout(self.ready_timeout_seconds):
                 await self._ready.wait()
-        payload = json.dumps(build_action_frame(action), ensure_ascii=False) + "\n"
-        self._process.stdin.write(payload.encode("utf-8"))
-        await self._process.stdin.drain()
+        await self._send_frame(build_action_frame(action))
 
     @property
     def command(self) -> Sequence[str]:
         return ()
+
+    @property
+    def startup_frames(self) -> list[dict[str, Any]]:
+        return []
 
     @property
     def ready_timeout_seconds(self) -> float:
@@ -92,6 +100,14 @@ class BridgeChannel(Channel):
     @property
     def bridge_info(self) -> dict[str, Any]:
         return dict(self._bridge_info)
+
+    @property
+    def bridge_state(self) -> str | None:
+        return self._bridge_state
+
+    @property
+    def bridge_provisioning(self) -> ProvisioningInfo | None:
+        return self._bridge_provisioning
 
     async def _stdout_loop(self) -> None:
         if self._process is None or self._process.stdout is None:
@@ -131,6 +147,18 @@ class BridgeChannel(Channel):
             self._ready.set()
             logger.info("bridge.ready channel={} info={}", self.name, self._bridge_info)
             return
+        if record_type == "state":
+            self._bridge_state = str(record.get("state", "unknown"))
+            logger.info("bridge.state channel={} state={}", self.name, self._bridge_state)
+            return
+        if record_type == "provisioning":
+            provisioning = record.get("provisioning", {})
+            if not isinstance(provisioning, dict):
+                logger.warning("bridge.provisioning.invalid channel={} payload={}", self.name, record)
+                return
+            self._bridge_provisioning = ProvisioningInfo.from_mapping(provisioning)
+            logger.info("bridge.provisioning channel={} state={}", self.name, self._bridge_provisioning.state)
+            return
         if record_type in {"inbound", "message", "inbound_message"}:
             payload = record.get("message", record)
             if not isinstance(payload, dict):
@@ -142,6 +170,13 @@ class BridgeChannel(Channel):
             logger.info("bridge.log channel={} message={}", self.name, record.get("message", ""))
             return
         logger.debug("bridge.record.ignored channel={} type={}", self.name, record_type)
+
+    async def _send_frame(self, frame: dict[str, Any]) -> None:
+        if self._process is None or self._process.stdin is None:
+            raise RuntimeError(f"{self.name} bridge is not running.")
+        payload = json.dumps(frame, ensure_ascii=False) + "\n"
+        self._process.stdin.write(payload.encode("utf-8"))
+        await self._process.stdin.drain()
 
 
 def split_command(value: str | None) -> list[str]:

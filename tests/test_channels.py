@@ -513,14 +513,30 @@ async def test_wecom_longconn_bot_channel_start_and_send_via_bridge() -> None:
         received.append(message)
 
     channel = WeComLongConnBotChannel(on_receive=on_receive)
-    channel._settings.command = (
+    channel._settings = channel._settings.model_copy(
+        update={
+            "command": (
         f"{sys.executable} -m bub.channels.dev_bridge "
-        "--channel wecom_longconn_bot --chat-id chat-1 --boot-message 'hello from bridge' --echo-actions"
+        "--channel wecom_longconn_bot --chat-id chat-1 --boot-message 'hello from bridge' --echo-actions --require-config"
+            ),
+            "bot_id": "bot-id",
+            "secret": "token-value",
+            "pairing_code": "PAIR-123",
+            "config_key": "CONF-456",
+            "callback_token": "token-abc",
+            "encoding_aes_key": "aes-key-xyz",
+        }
     )
 
     await channel.start(asyncio.Event())
     assert channel.is_ready is True
     assert channel.bridge_info["channel"] == "wecom_longconn_bot"
+    assert channel.bridge_info["configured"] is True
+    assert channel.bridge_state == "configured"
+    assert channel.bridge_provisioning is not None
+    assert channel.bridge_provisioning.state == "active"
+    assert channel.bridge_provisioning.pairing_code == "PAIR-123"
+    assert channel.bridge_provisioning.config_key == "CONF-456"
     await asyncio.sleep(0.2)
     await channel.send(
         OutboundAction(
@@ -552,6 +568,8 @@ def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
             "bot_id": "bot-id",
             "secret": "token-value",
             "pairing_code": "PAIR-123",
+            "callback_token": "token-abc",
+            "encoding_aes_key": "aes-key-xyz",
         }
     )
 
@@ -561,6 +579,14 @@ def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
     assert channel.capabilities.provisioning.mode == "interactive_pairing"
     assert channel.capabilities.provisioning.pairing_code == "PAIR-123"
     assert channel.ready_timeout_seconds == 5.0
+    assert [item.key for item in channel.capabilities.credential_specs] == [
+        "bot_id",
+        "secret",
+        "callback_token",
+        "encoding_aes_key",
+    ]
+    assert channel.startup_frames[0]["type"] == "configure"
+    assert channel.startup_frames[0]["config"]["bot_id"] == "bot-id"
 
 
 def _async_return(value):
