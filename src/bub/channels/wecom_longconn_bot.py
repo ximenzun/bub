@@ -1,12 +1,12 @@
 from __future__ import annotations
 
-import sys
 from collections.abc import Sequence
+from pathlib import Path
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-from bub.channels.bridge import BridgeChannel, split_command
+from bub.channels.bridge import BridgeChannel, run_command, split_command
 from bub.channels.bridge_protocol import build_configure_frame
 from bub.social import ChannelCapabilities, ContentConstraint, CredentialSpec, ProvisioningInfo
 from bub.types import MessageHandler
@@ -16,12 +16,16 @@ class WeComLongConnBotSettings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="BUB_WECOM_LONGCONN_", extra="ignore", env_file=".env")
 
     command: str = Field(default="", description="Subprocess command that runs the WeCom long-connection bridge.")
+    node_command: str = Field(default="node", description="Node.js executable used for the bundled WeCom bridge.")
+    npm_command: str = Field(default="npm", description="npm executable used to bootstrap the bundled WeCom bridge.")
     bot_id: str = Field(default="", description="WeCom smart bot Bot ID.")
     secret: str = Field(default="", description="WeCom smart bot Secret.")
     pairing_code: str = Field(default="", description="Optional interactive pairing code.")
     config_key: str = Field(default="", description="Optional config key returned during pairing.")
     callback_token: str = Field(default="", description="Optional callback verification token for event decrypt.")
     encoding_aes_key: str = Field(default="", description="Optional callback AES key for event decrypt.")
+    websocket_url: str = Field(default="", description="Optional WeCom WebSocket URL override.")
+    mock: bool = Field(default=False, description="Run the bundled bridge in mock mode.")
     ready_timeout_seconds: float = Field(default=5.0, description="Seconds to wait for the bridge ready frame.")
 
 
@@ -81,7 +85,10 @@ class WeComLongConnBotChannel(BridgeChannel):
         if explicit := split_command(self._settings.command):
             return explicit
         if self._settings.bot_id and self._settings.secret:
-            return [sys.executable, "-m", "bub.channels.wecom_longconn_bridge", "--channel", self.name]
+            command = [self._settings.node_command, str(self._bridge_script_path()), "--channel", self.name]
+            if self._settings.mock:
+                command.append("--mock")
+            return command
         return []
 
     @property
@@ -101,4 +108,28 @@ class WeComLongConnBotChannel(BridgeChannel):
             "config_key": self._settings.config_key or None,
             "callback_token": self._settings.callback_token or None,
             "encoding_aes_key": self._settings.encoding_aes_key or None,
+            "websocket_url": self._settings.websocket_url or None,
         }
+
+    async def prepare(self) -> None:
+        if split_command(self._settings.command):
+            return
+        if not (self._settings.bot_id and self._settings.secret):
+            return
+        if self._settings.mock:
+            return
+        package_json = self._bridge_runtime_dir() / "package.json"
+        sdk_package = self._bridge_runtime_dir() / "node_modules" / "@wecom" / "aibot-node-sdk" / "package.json"
+        if not package_json.exists():
+            raise RuntimeError(f"WeCom bridge runtime package.json not found at {package_json}")
+        if sdk_package.exists():
+            return
+        await run_command([self._settings.npm_command, "install", "--no-fund", "--no-audit"], cwd=self._bridge_runtime_dir())
+
+    @staticmethod
+    def _bridge_runtime_dir() -> Path:
+        return Path(__file__).with_name("node")
+
+    @staticmethod
+    def _bridge_script_path() -> Path:
+        return WeComLongConnBotChannel._bridge_runtime_dir() / "wecom_longconn_bridge.mjs"
