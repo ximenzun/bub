@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
+import shutil
 from pathlib import Path
 from typing import TYPE_CHECKING, cast
 
@@ -24,6 +26,44 @@ def _get_agent(context: ToolContext) -> Agent:
     return cast("Agent", context.state["_runtime_agent"])
 
 
+def _resolve_rg_binary() -> Path | None:
+    candidate = shutil.which("rg")
+    if candidate:
+        return Path(candidate)
+
+    home = Path.home()
+    extra_candidates = [
+        home / ".local" / "bin" / "rg",
+        Path("/opt/homebrew/bin/rg"),
+        Path("/usr/local/bin/rg"),
+        Path("/usr/bin/rg"),
+    ]
+    for path in extra_candidates:
+        if path.is_file():
+            return path
+
+    codex_vendor_root = home / ".local" / "share" / "mise" / "installs"
+    for path in codex_vendor_root.glob(
+        "node/*/lib/node_modules/@openai/codex/node_modules/@openai/codex-*/vendor/*/path/rg"
+    ):
+        if path.is_file():
+            return path
+    return None
+
+
+def _subprocess_env() -> dict[str, str]:
+    env = dict(os.environ)
+    rg_binary = _resolve_rg_binary()
+    if rg_binary is None:
+        return env
+    current_path = env.get("PATH", "")
+    path_entries = current_path.split(os.pathsep) if current_path else []
+    rg_dir = str(rg_binary.parent)
+    if rg_dir not in path_entries:
+        env["PATH"] = os.pathsep.join([rg_dir, *path_entries]) if path_entries else rg_dir
+    return env
+
+
 @tool(context=True)
 async def bash(
     cmd: str, cwd: str | None = None, timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS, *, context: ToolContext
@@ -33,6 +73,7 @@ async def bash(
     completed = await asyncio.create_subprocess_shell(
         cmd,
         cwd=cwd or workspace,
+        env=_subprocess_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
     )
