@@ -8,6 +8,12 @@ from datetime import datetime
 from typing import Any, Literal
 
 type ConversationSurface = Literal["direct", "group", "channel", "thread", "business", "unknown"]
+type AdapterMode = Literal["native", "bridge", "webhook_sink", "session_bot", "tenant_app", "unknown"]
+type TransportKind = Literal["webhook", "long_connection", "tenant_api", "http", "websocket", "stdio", "unknown"]
+type ProvisioningMode = Literal["none", "static_config", "interactive_pairing"]
+type ProvisioningState = Literal["pending", "paired", "active", "revoked", "error", "unknown"]
+type CredentialKind = Literal["none", "webhook_url", "bot_secret", "tenant_app", "token", "custom"]
+type MentionTargetKind = Literal["user_id", "mobile", "all", "open_id", "unknown"]
 type EventKind = Literal["message", "interaction", "reaction", "read_receipt", "lifecycle"]
 type ContentKind = Literal["text", "rich_text", "card", "image", "audio", "video", "file", "json", "unknown"]
 type ReplyMode = Literal["none", "same_conversation", "message_id", "token", "windowed"]
@@ -103,6 +109,9 @@ class ConversationRef:
     platform: str
     chat_id: str
     account_id: str = "default"
+    route_channel: str | None = None
+    adapter_mode: AdapterMode = "native"
+    transport: TransportKind = "unknown"
     surface: ConversationSurface = "unknown"
     thread_id: str | None = None
     lane_id: str | None = None
@@ -122,6 +131,9 @@ class ConversationRef:
             platform=str(data.get("platform") or default_platform or "unknown"),
             chat_id=str(data.get("chat_id") or default_chat_id),
             account_id=str(data.get("account_id") or "default"),
+            route_channel=_as_str(data.get("route_channel")),
+            adapter_mode=str(data.get("adapter_mode") or "native"),  # type: ignore[arg-type]
+            transport=str(data.get("transport") or "unknown"),  # type: ignore[arg-type]
             surface=normalize_surface(data.get("surface")),
             thread_id=_as_str(data.get("thread_id")),
             lane_id=_as_str(data.get("lane_id")),
@@ -132,6 +144,10 @@ class ConversationRef:
 
     def as_dict(self) -> dict[str, Any]:
         return to_primitive(self)
+
+    @property
+    def channel_key(self) -> str:
+        return self.route_channel or self.platform
 
 
 @dataclass(slots=True)
@@ -157,6 +173,88 @@ class ParticipantRef:
             tenant_id=_as_str(data.get("tenant_id")),
             open_id=_as_str(data.get("open_id")),
             union_id=_as_str(data.get("union_id")),
+            metadata=dict(_mapping_of(data.get("metadata"))),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(slots=True)
+class MentionTarget:
+    kind: MentionTargetKind
+    value: str
+    label: str | None = None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> MentionTarget:
+        kind = str(data.get("kind") or "unknown")
+        if kind not in {"user_id", "mobile", "all", "open_id", "unknown"}:
+            kind = "unknown"
+        return cls(
+            kind=kind,  # type: ignore[arg-type]
+            value=str(data.get("value") or ""),
+            label=_as_str(data.get("label")),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(slots=True)
+class CredentialSpec:
+    key: str
+    kind: CredentialKind
+    required: bool = True
+    secret: bool = True
+    env_var: str | None = None
+    description: str | None = None
+    example: str | None = None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> CredentialSpec:
+        kind = str(data.get("kind") or "custom")
+        if kind not in {"none", "webhook_url", "bot_secret", "tenant_app", "token", "custom"}:
+            kind = "custom"
+        return cls(
+            key=str(data.get("key") or "unknown"),
+            kind=kind,  # type: ignore[arg-type]
+            required=bool(data.get("required", True)),
+            secret=bool(data.get("secret", True)),
+            env_var=_as_str(data.get("env_var")),
+            description=_as_str(data.get("description")),
+            example=_as_str(data.get("example")),
+        )
+
+    def as_dict(self) -> dict[str, Any]:
+        return to_primitive(self)
+
+
+@dataclass(slots=True)
+class ProvisioningInfo:
+    mode: ProvisioningMode = "none"
+    state: ProvisioningState = "unknown"
+    pairing_code: str | None = None
+    config_key: str | None = None
+    expires_at: datetime | None = None
+    instructions: str | None = None
+    metadata: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> ProvisioningInfo:
+        mode = str(data.get("mode") or "none")
+        if mode not in {"none", "static_config", "interactive_pairing"}:
+            mode = "none"
+        state = str(data.get("state") or "unknown")
+        if state not in {"pending", "paired", "active", "revoked", "error", "unknown"}:
+            state = "unknown"
+        return cls(
+            mode=mode,  # type: ignore[arg-type]
+            state=state,  # type: ignore[arg-type]
+            pairing_code=_as_str(data.get("pairing_code")),
+            config_key=_as_str(data.get("config_key")),
+            expires_at=_coerce_datetime(data.get("expires_at")),
+            instructions=_as_str(data.get("instructions")),
             metadata=dict(_mapping_of(data.get("metadata"))),
         )
 

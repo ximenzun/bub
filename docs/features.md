@@ -4,8 +4,8 @@
 
 - Hook-first architecture powered by `pluggy`.
 - Deterministic turn pipeline in `BubFramework.process_inbound()`.
-- Safe fallback to prompt text when `run_model` returns no value (with `on_error` notification).
-- Automatic fallback outbound action when `render_actions` produces nothing.
+- Safe fallback to prompt text when `run_model_stream` returns no value (with `on_error` notification).
+- Automatic fallback send/reply action when `render_actions` produces nothing and final text is non-empty.
 
 ## Runtime And Commands
 

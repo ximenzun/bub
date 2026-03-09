@@ -10,6 +10,7 @@ from bub.builtin.store import FileTapeStore
 from bub.channels.message import ChannelMessage
 from bub.framework import BubFramework
 from bub.social import ConversationRef, OutboundAction
+from bub.types import ModelEvent
 
 
 class RecordingLifespan:
@@ -32,6 +33,9 @@ class FakeAgent:
     async def run(self, *, session_id: str, prompt: str, state: dict[str, object]) -> str:
         self.calls.append((session_id, prompt, state))
         return "agent-output"
+
+    async def run_stream(self, *, session_id: str, prompt: str, state: dict[str, object]):
+        yield ModelEvent(kind="text_delta", text=await self.run(session_id=session_id, prompt=prompt, state=state))
 
 
 def _raise_value_error() -> None:
@@ -111,13 +115,13 @@ def test_build_prompt_marks_commands_and_prefixes_context(tmp_path: Path) -> Non
 
 
 @pytest.mark.asyncio
-async def test_run_model_delegates_to_agent(tmp_path: Path) -> None:
+async def test_run_model_stream_delegates_to_agent(tmp_path: Path) -> None:
     _, impl, agent = _build_impl(tmp_path)
     state = {"context": "ctx"}
 
-    result = await impl.run_model(prompt="prompt", session_id="session", state=state)
+    result = [event async for event in impl.run_model_stream(prompt="prompt", session_id="session", state=state)]
 
-    assert result == "agent-output"
+    assert result == [ModelEvent(kind="text_delta", text="agent-output")]
     assert agent.calls == [("session", "prompt", state)]
 
 

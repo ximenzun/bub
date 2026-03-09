@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -17,7 +17,7 @@ from bub.envelope import content_of, field_of, unpack_batch
 from bub.hook_runtime import HookRuntime
 from bub.hookspecs import BUB_HOOK_NAMESPACE, BubHookSpecs
 from bub.social import ConversationRef, OutboundAction, ReplyGrant, normalize_surface
-from bub.types import Envelope, MessageHandler, OutboundChannelRouter, TurnResult
+from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, OutboundChannelRouter, TurnResult
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
@@ -105,19 +105,20 @@ class BubFramework:
             if not prompt:
                 prompt = content_of(inbound)
             model_output = ""
+            streamed_actions: list[OutboundAction] = []
             try:
-                model_output = await self._hook_runtime.call_first(
-                    "run_model", prompt=prompt, session_id=session_id, state=state
+                model_stream = await self._hook_runtime.call_first(
+                    "run_model_stream", prompt=prompt, session_id=session_id, state=state
                 )
-                if model_output is None:
+                if model_stream is None:
                     await self._hook_runtime.notify_error(
-                        stage="run_model:fallback",
-                        error=RuntimeError("no model skill returned output"),
+                        stage="run_model_stream:fallback",
+                        error=RuntimeError("no model stream returned output"),
                         message=inbound,
                     )
                     model_output = prompt
                 else:
-                    model_output = str(model_output)
+                    model_output, streamed_actions = await self._consume_model_stream(model_stream)
             finally:
                 await self._hook_runtime.call_many(
                     "save_state",
@@ -129,12 +130,12 @@ class BubFramework:
 
             outbound_actions = await self._collect_outbound_actions(inbound, session_id, state, model_output)
             for action in outbound_actions:
-                await self._hook_runtime.call_many("dispatch_outbound", action=action)
+                await self._dispatch_action(action)
             return TurnResult(
                 session_id=session_id,
                 prompt=prompt,
                 model_output=model_output,
-                outbound_actions=outbound_actions,
+                outbound_actions=[*streamed_actions, *outbound_actions],
             )
         except Exception as exc:
             await self._hook_runtime.notify_error(stage="turn", error=exc, message=inbound)
@@ -191,10 +192,51 @@ class BubFramework:
         if outbound_actions:
             return outbound_actions
 
-        return [self._default_outbound_action(message, model_output)]
+        fallback_action = self._default_outbound_action(message, model_output)
+        if fallback_action is None:
+            return []
+        return [fallback_action]
+
+    async def _consume_model_stream(self, model_stream: ModelStream | Iterable[ModelEvent]) -> tuple[str, list[OutboundAction]]:
+        text_parts: list[str] = []
+        streamed_actions: list[OutboundAction] = []
+        if hasattr(model_stream, "__aiter__"):
+            async for event in model_stream:  # type: ignore[union-attr]
+                await self._handle_model_event(event, text_parts, streamed_actions)
+        else:
+            for event in model_stream:
+                await self._handle_model_event(event, text_parts, streamed_actions)
+        return "".join(text_parts), streamed_actions
+
+    async def _handle_model_event(
+        self,
+        event: ModelEvent,
+        text_parts: list[str],
+        streamed_actions: list[OutboundAction],
+    ) -> None:
+        if not isinstance(event, ModelEvent):
+            raise TypeError(f"Unsupported model event type: {type(event)!r}")
+        if event.kind == "text_delta":
+            text_parts.append(event.text)
+            return
+        if event.kind == "action":
+            if event.action is None:
+                raise ValueError("ModelEvent(kind='action') requires action")
+            streamed_actions.append(event.action)
+            await self._dispatch_action(event.action)
+            return
+        raise ValueError(f"Unsupported model event kind: {event.kind!r}")
+
+    async def _dispatch_action(self, action: OutboundAction) -> bool:
+        hook_results = await self._hook_runtime.call_many("dispatch_outbound", action=action)
+        if any(result is True for result in hook_results):
+            return True
+        return await self.dispatch_via_router(action)
 
     @staticmethod
-    def _default_outbound_action(message: Envelope, model_output: str) -> OutboundAction:
+    def _default_outbound_action(message: Envelope, model_output: str) -> OutboundAction | None:
+        if not model_output.strip():
+            return None
         raw_conversation = field_of(message, "conversation")
         if isinstance(raw_conversation, ConversationRef):
             conversation = raw_conversation

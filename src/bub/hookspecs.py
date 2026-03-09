@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from typing import TYPE_CHECKING, Any
 
 import pluggy
@@ -9,7 +10,7 @@ from republic import AsyncTapeStore
 from republic.tape import TapeStore
 
 from bub.social import OutboundAction
-from bub.types import Envelope, MessageHandler, State
+from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, State
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
@@ -38,8 +39,8 @@ class BubHookSpecs:
         raise NotImplementedError
 
     @hookspec(firstresult=True)
-    def run_model(self, prompt: str, session_id: str, state: State) -> str:
-        """Run model for one turn and return plain text output."""
+    def run_model_stream(self, prompt: str, session_id: str, state: State) -> ModelStream | Iterable[ModelEvent]:
+        """Run model for one turn and emit model events."""
         raise NotImplementedError
 
     @hookspec
