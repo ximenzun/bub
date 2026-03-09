@@ -54,7 +54,7 @@ uv run bub gateway --enable-channel wecom_webhook
 - `wecom_webhook` is currently outbound-only.
 - It targets the Enterprise WeCom webhook push surface (`/cgi-bin/webhook/send`).
 - `wecom_longconn_bot` is a subprocess bridge skeleton for the long-connection smart-bot surface.
-- The long-connection adapter is not functional until a bridge command is configured.
+- When `BUB_WECOM_LONGCONN_BOT_ID` and `BUB_WECOM_LONGCONN_SECRET` are configured, the long-connection adapter will default to the bundled `bub.channels.wecom_longconn_bridge` runner.
 - For development, you can point `BUB_WECOM_LONGCONN_COMMAND` at the bundled dev bridge, for example:
 
 ```bash
