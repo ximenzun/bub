@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 from typing import Any
 
 import pytest
@@ -109,3 +110,15 @@ def test_render_tools_prompt_renders_available_tools_block() -> None:
 
 def test_render_tools_prompt_returns_empty_string_for_empty_input() -> None:
     assert render_tools_prompt([]) == ""
+
+
+def test_subprocess_env_prepends_rg_directory(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bub.builtin import tools as builtin_tools
+
+    rg_binary = builtin_tools.Path.home() / "test-tools" / "rg"
+    monkeypatch.setattr(builtin_tools, "_resolve_rg_binary", lambda: rg_binary)
+    monkeypatch.setattr(builtin_tools.os, "environ", {"PATH": "/usr/bin:/bin"})
+
+    env = builtin_tools._subprocess_env()
+
+    assert env["PATH"] == os.pathsep.join([str(rg_binary.parent), "/usr/bin", "/bin"])
