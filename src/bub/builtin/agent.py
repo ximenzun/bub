@@ -23,7 +23,7 @@ from bub.builtin.tape import TapeService
 from bub.framework import BubFramework
 from bub.skills import discover_skills, render_skills_prompt
 from bub.tools import REGISTRY, model_tools, render_tools_prompt
-from bub.types import State
+from bub.types import ModelEvent, State
 from bub.utils import workspace_from_state
 
 CONTINUE_PROMPT = "Continue the task."
@@ -58,6 +58,10 @@ class Agent:
             if stripped.startswith(","):
                 return await self._run_command(tape=tape, line=stripped)
             return await self._agent_loop(tape=tape, prompt=stripped)
+
+    async def run_stream(self, *, session_id: str, prompt: str, state: State):
+        result = await self.run(session_id=session_id, prompt=prompt, state=state)
+        yield ModelEvent(kind="text_delta", text=result)
 
     async def _run_command(self, tape: Tape, *, line: str) -> str:
         line = line[1:].strip()

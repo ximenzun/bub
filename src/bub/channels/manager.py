@@ -74,7 +74,7 @@ class ChannelManager:
     async def dispatch(self, action: OutboundAction) -> bool:
         if action.conversation is None:
             return False
-        channel_key = action.conversation.platform
+        channel_key = action.conversation.channel_key
         channel = self.get_channel(channel_key)
         if channel is None:
             return False

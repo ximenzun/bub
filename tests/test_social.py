@@ -1,7 +1,17 @@
 from __future__ import annotations
 
 from bub.channels.message import ChannelMessage
-from bub.social import Attachment, ConversationRef, OutboundAction, ReplyGrant
+from bub.social import (
+    Attachment,
+    ChannelCapabilities,
+    ContentConstraint,
+    ConversationRef,
+    CredentialSpec,
+    MentionTarget,
+    OutboundAction,
+    ProvisioningInfo,
+    ReplyGrant,
+)
 from bub.social.compat import attachments_of, inbound_event_of, outbound_actions_of
 
 
@@ -62,3 +72,53 @@ def test_inbound_event_of_uses_richer_channel_message_metadata() -> None:
     assert event.message_id == "99"
     assert event.reply_grant == ReplyGrant(mode="message_id", reply_to_message_id="99")
     assert event.conversation == ConversationRef(platform="telegram", chat_id="42", account_id="default")
+
+
+def test_conversation_ref_supports_route_channel_for_multi_adapter_platforms() -> None:
+    conversation = ConversationRef(
+        platform="wecom",
+        route_channel="wecom_longconn_bot",
+        chat_id="chat-1",
+        adapter_mode="session_bot",
+        transport="long_connection",
+    )
+
+    assert conversation.channel_key == "wecom_longconn_bot"
+    assert conversation.as_dict()["adapter_mode"] == "session_bot"
+    assert conversation.as_dict()["transport"] == "long_connection"
+
+
+def test_provisioning_and_credentials_cover_wecom_long_connection_bot_shape() -> None:
+    provisioning = ProvisioningInfo(
+        mode="interactive_pairing",
+        state="pending",
+        pairing_code="PAIR-123",
+        config_key="CONFIG-456",
+    )
+    capabilities = ChannelCapabilities(
+        platform="wecom",
+        adapter_mode="bridge",
+        transport="long_connection",
+        provisioning_mode="interactive_pairing",
+        credential_specs=(
+            CredentialSpec(key="bot_id", kind="bot_secret", secret=False, env_var="WECOM_BOT_ID"),
+            CredentialSpec(key="secret", kind="bot_secret", env_var="WECOM_BOT_SECRET"),
+        ),
+        provisioning=provisioning,
+        content_constraints={
+            "text": ContentConstraint(max_body_bytes=2048, supports_mentions=True),
+            "card": ContentConstraint(notes=("template_card",)),
+        },
+    )
+
+    assert capabilities.provisioning.mode == "interactive_pairing"
+    assert capabilities.provisioning.state == "pending"
+    assert capabilities.credential_specs[0].key == "bot_id"
+    assert capabilities.content_constraints["text"].max_body_bytes == 2048
+    assert capabilities.content_constraints["card"].notes == ("template_card",)
+
+
+def test_mention_target_supports_wecom_mobile_mentions() -> None:
+    mention = MentionTarget(kind="mobile", value="13800001111", label="oncall")
+
+    assert mention.as_dict() == {"kind": "mobile", "value": "13800001111", "label": "oncall"}

@@ -10,6 +10,7 @@ from bub.channels.base import Channel
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
 from bub.social import ConversationRef, OutboundAction
+from bub.types import ModelEvent
 
 
 class NamedChannel(Channel):
@@ -131,8 +132,8 @@ async def test_process_inbound_falls_back_to_native_outbound_action() -> None:
             return "prompt"
 
         @hookimpl
-        async def run_model(self, prompt, session_id, state):
-            return "hello"
+        async def run_model_stream(self, prompt, session_id, state):
+            yield ModelEvent(kind="text_delta", text="hello")
 
     framework._plugin_manager.register(Plugin(), name="plugin")
 
@@ -147,3 +148,105 @@ async def test_process_inbound_falls_back_to_native_outbound_action() -> None:
             metadata={"message_kind": "normal"},
         )
     ]
+
+
+@pytest.mark.asyncio
+async def test_process_inbound_dispatches_streamed_actions_before_final_actions() -> None:
+    framework = BubFramework()
+    dispatched: list[OutboundAction] = []
+
+    class Router:
+        async def dispatch(self, action: OutboundAction) -> bool:
+            dispatched.append(action)
+            return True
+
+    class Plugin:
+        @hookimpl
+        def resolve_session(self, message):
+            return "telegram:42"
+
+        @hookimpl
+        def load_state(self, message, session_id):
+            return {}
+
+        @hookimpl
+        def build_prompt(self, message, session_id, state):
+            return "prompt"
+
+        @hookimpl
+        async def run_model_stream(self, prompt, session_id, state):
+            yield ModelEvent(
+                kind="action",
+                action=OutboundAction(
+                    kind="presence",
+                    conversation=ConversationRef(platform="telegram", chat_id="42", account_id="default"),
+                ),
+            )
+            yield ModelEvent(kind="text_delta", text="hello")
+
+    framework._plugin_manager.register(Plugin(), name="plugin")
+    framework.bind_outbound_router(Router())
+
+    result = await framework.process_inbound({"channel": "telegram", "chat_id": "42", "content": "ignored"})
+
+    assert dispatched == [
+        OutboundAction(
+            kind="presence",
+            conversation=ConversationRef(platform="telegram", chat_id="42", account_id="default"),
+        ),
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="telegram", chat_id="42", account_id="default"),
+            text="hello",
+            content_type="text",
+            metadata={"message_kind": "normal"},
+        ),
+    ]
+    assert result.outbound_actions == dispatched
+
+
+@pytest.mark.asyncio
+async def test_process_inbound_does_not_emit_blank_final_action_when_stream_only_emits_actions() -> None:
+    framework = BubFramework()
+    dispatched: list[OutboundAction] = []
+
+    class Router:
+        async def dispatch(self, action: OutboundAction) -> bool:
+            dispatched.append(action)
+            return True
+
+    class Plugin:
+        @hookimpl
+        def resolve_session(self, message):
+            return "telegram:42"
+
+        @hookimpl
+        def load_state(self, message, session_id):
+            return {}
+
+        @hookimpl
+        def build_prompt(self, message, session_id, state):
+            return "prompt"
+
+        @hookimpl
+        async def run_model_stream(self, prompt, session_id, state):
+            yield ModelEvent(
+                kind="action",
+                action=OutboundAction(
+                    kind="presence",
+                    conversation=ConversationRef(platform="telegram", chat_id="42", account_id="default"),
+                ),
+            )
+
+    framework._plugin_manager.register(Plugin(), name="plugin")
+    framework.bind_outbound_router(Router())
+
+    result = await framework.process_inbound({"channel": "telegram", "chat_id": "42", "content": "ignored"})
+
+    assert dispatched == [
+        OutboundAction(
+            kind="presence",
+            conversation=ConversationRef(platform="telegram", chat_id="42", account_id="default"),
+        )
+    ]
+    assert result.outbound_actions == dispatched

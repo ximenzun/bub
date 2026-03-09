@@ -12,7 +12,7 @@ from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
 from bub.social import ConversationRef, OutboundAction, ReplyGrant, normalize_surface
-from bub.types import Envelope, MessageHandler, State
+from bub.types import Envelope, MessageHandler, ModelEvent, State
 
 AGENTS_FILE_NAME = "AGENTS.md"
 DEFAULT_SYSTEM_PROMPT = """\
@@ -84,8 +84,11 @@ class BuiltinImpl:
         return f"{context_prefix}{content}"
 
     @hookimpl
-    async def run_model(self, prompt: str, session_id: str, state: State) -> str:
-        return await self.agent.run(session_id=session_id, prompt=prompt, state=state)
+    async def run_model_stream(self, prompt: str, session_id: str, state: State):
+        async for event in self.agent.run_stream(session_id=session_id, prompt=prompt, state=state):
+            if not isinstance(event, ModelEvent):
+                raise TypeError(f"Agent.run_stream() must yield ModelEvent, got {type(event)!r}")
+            yield event
 
     @hookimpl
     def register_cli_commands(self, app: typer.Typer) -> None:
@@ -160,6 +163,8 @@ class BuiltinImpl:
         state: State,
         model_output: str,
     ) -> list[OutboundAction]:
+        if not model_output.strip():
+            return []
         action = OutboundAction(
             kind="reply_message" if self._reply_to_message_id(message) else "send_message",
             conversation=self._conversation_for(message),

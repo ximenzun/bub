@@ -130,6 +130,29 @@ async def test_channel_manager_dispatch_uses_output_channel_and_preserves_metada
     assert action.conversation == ConversationRef(platform="cli", chat_id="room", account_id="default")
 
 
+@pytest.mark.asyncio
+async def test_channel_manager_dispatch_prefers_conversation_route_channel() -> None:
+    webhook_channel = FakeChannel("wecom_webhook")
+    manager = ChannelManager(FakeFramework({"wecom_webhook": webhook_channel}), enabled_channels=["wecom_webhook"])
+
+    result = await manager.dispatch(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(
+                platform="wecom",
+                route_channel="wecom_webhook",
+                chat_id="room",
+                adapter_mode="webhook_sink",
+                transport="webhook",
+            ),
+            text="hello",
+        )
+    )
+
+    assert result is True
+    assert webhook_channel.sent[0].conversation.channel_key == "wecom_webhook"
+
+
 def test_channel_manager_enabled_channels_excludes_cli_from_all() -> None:
     channels = {"cli": FakeChannel("cli"), "telegram": FakeChannel("telegram"), "discord": FakeChannel("discord")}
     manager = ChannelManager(FakeFramework(channels), enabled_channels=["all"])

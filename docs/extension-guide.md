@@ -100,10 +100,11 @@ Current `process_inbound()` hook usage:
 1. `resolve_session` (`call_first`)
 2. `load_state` (`call_many`, then merged by framework)
 3. `build_prompt` (`call_first`)
-4. `run_model` (`call_first`)
+4. `run_model_stream` (`call_first`)
 5. `save_state` (`call_many`, always executed in `finally`)
-6. `render_actions` (`call_many`)
-7. `dispatch_outbound` (`call_many`, per action)
+6. streamed `dispatch_outbound` calls for emitted action events
+7. `render_actions` (`call_many`)
+8. `dispatch_outbound` (`call_many`, per final action)
 
 Other hook consumers:
 
@@ -150,6 +151,7 @@ class SessionPlugin:
 from __future__ import annotations
 
 from bub import hookimpl
+from bub.types import ModelEvent
 
 
 class EchoPlugin:
@@ -158,8 +160,8 @@ class EchoPlugin:
         return f"[echo] {message['content']}"
 
     @hookimpl
-    async def run_model(self, prompt, session_id, state):
-        return prompt
+    async def run_model_stream(self, prompt, session_id, state):
+        yield ModelEvent(kind="text_delta", text=prompt)
 ```
 
 Run and verify:
@@ -169,7 +171,7 @@ uv run bub hooks
 uv run bub run "hello"
 ```
 
-Check that your plugin is listed for `build_prompt` / `run_model`, and output reflects your override.
+Check that your plugin is listed for `build_prompt` / `run_model_stream`, and output reflects your override.
 
 ## 10) Common Pitfalls
 
