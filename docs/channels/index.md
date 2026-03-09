@@ -7,6 +7,7 @@ Bub uses channel adapters to run the same agent pipeline across different I/O en
 - `cli`: local interactive terminal channel (`uv run bub chat`)
 - `telegram`: Telegram bot channel (`uv run bub gateway`)
 - `wecom_webhook`: Enterprise WeCom webhook push channel (outbound-only)
+- `wecom_longconn_bot`: Enterprise WeCom smart-bot bridge channel (skeleton)
 
 See [Telegram](telegram.md) for channel-specific configuration and runtime behavior.
 
@@ -52,7 +53,8 @@ uv run bub gateway --enable-channel wecom_webhook
 
 - `wecom_webhook` is currently outbound-only.
 - It targets the Enterprise WeCom webhook push surface (`/cgi-bin/webhook/send`).
-- Long-connection WeCom smart bots are not implemented yet.
+- `wecom_longconn_bot` is a subprocess bridge skeleton for the long-connection smart-bot surface.
+- The long-connection adapter is not functional until a bridge command is configured.
 
 ## About Discord
 

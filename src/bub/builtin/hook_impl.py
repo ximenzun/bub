@@ -118,10 +118,12 @@ class BuiltinImpl:
     def provide_channels(self, message_handler: MessageHandler) -> list[Channel]:
         from bub.channels.cli import CliChannel
         from bub.channels.telegram import TelegramChannel
+        from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
         from bub.channels.wecom_webhook import WeComWebhookChannel
 
         return [
             WeComWebhookChannel(),
+            WeComLongConnBotChannel(on_receive=message_handler),
             TelegramChannel(on_receive=message_handler),
             CliChannel(on_receive=message_handler, agent=self.agent),
         ]

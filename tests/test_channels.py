@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,6 +12,7 @@ from bub.channels.handler import BufferedMessageHandler
 from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel
+from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
 from bub.channels.wecom_webhook import WeComWebhookChannel
 from bub.social import ConversationRef, OutboundAction, ReplyGrant
 
@@ -501,6 +503,81 @@ def test_wecom_webhook_channel_upload_url_derives_key_and_type() -> None:
         channel._upload_url("voice")
         == "https://qyapi.weixin.qq.com/cgi-bin/webhook/upload_media?key=test-key&type=voice"
     )
+
+
+@pytest.mark.asyncio
+async def test_wecom_longconn_bot_channel_start_and_send_via_bridge(tmp_path: Path) -> None:
+    script = tmp_path / "bridge.py"
+    output = tmp_path / "output.jsonl"
+    script.write_text(
+        """
+import json
+import pathlib
+import sys
+
+path = pathlib.Path(sys.argv[1])
+print(json.dumps({
+    "type": "message",
+    "message": {
+        "session_id": "wecom:chat-1",
+        "channel": "wecom_longconn_bot",
+        "chat_id": "chat-1",
+        "content": "hello from bridge"
+    }
+}), flush=True)
+line = sys.stdin.readline()
+path.write_text(line, encoding="utf-8")
+""".strip(),
+        encoding="utf-8",
+    )
+
+    received: list[ChannelMessage] = []
+
+    async def on_receive(message: ChannelMessage) -> None:
+        received.append(message)
+
+    channel = WeComLongConnBotChannel(on_receive=on_receive)
+    channel._settings.command = f"{sys.executable} -u {script} {output}"
+
+    await channel.start(asyncio.Event())
+    await asyncio.sleep(0.1)
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(
+                platform="wecom",
+                route_channel="wecom_longconn_bot",
+                chat_id="chat-1",
+                adapter_mode="bridge",
+                transport="long_connection",
+            ),
+            text="ping",
+        )
+    )
+    await asyncio.sleep(0.1)
+    await channel.stop()
+
+    assert received[0].channel == "wecom_longconn_bot"
+    assert received[0].content == "hello from bridge"
+    assert '"kind": "send_message"' in output.read_text(encoding="utf-8")
+
+
+def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
+    channel = WeComLongConnBotChannel(lambda message: None)
+    channel._settings = channel._settings.model_copy(
+        update={
+            "command": "python bridge.py --flag",
+            "bot_id": "bot-id",
+            "secret": "token-value",
+            "pairing_code": "PAIR-123",
+        }
+    )
+
+    assert list(channel.command) == ["python", "bridge.py", "--flag"]
+    assert channel.capabilities.transport == "long_connection"
+    assert channel.capabilities.adapter_mode == "bridge"
+    assert channel.capabilities.provisioning.mode == "interactive_pairing"
+    assert channel.capabilities.provisioning.pairing_code == "PAIR-123"
 
 
 def _async_return(value):

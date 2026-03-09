@@ -164,12 +164,20 @@ def test_provide_channels_returns_wecom_telegram_and_cli(tmp_path: Path, monkeyp
         def __init__(self) -> None:
             self.created = True
 
+    class DummyWeComLongConnBotChannel:
+        name = "wecom_longconn_bot"
+
+        def __init__(self, on_receive) -> None:
+            self.on_receive = on_receive
+
     import bub.channels.cli
     import bub.channels.telegram
+    import bub.channels.wecom_longconn_bot
     import bub.channels.wecom_webhook
 
     monkeypatch.setattr(bub.channels.cli, "CliChannel", DummyCliChannel)
     monkeypatch.setattr(bub.channels.telegram, "TelegramChannel", DummyTelegramChannel)
+    monkeypatch.setattr(bub.channels.wecom_longconn_bot, "WeComLongConnBotChannel", DummyWeComLongConnBotChannel)
     monkeypatch.setattr(bub.channels.wecom_webhook, "WeComWebhookChannel", DummyWeComWebhookChannel)
 
     def message_handler(message) -> None:
@@ -177,10 +185,11 @@ def test_provide_channels_returns_wecom_telegram_and_cli(tmp_path: Path, monkeyp
 
     channels = impl.provide_channels(message_handler)
 
-    assert [channel.name for channel in channels] == ["wecom_webhook", "telegram", "cli"]
+    assert [channel.name for channel in channels] == ["wecom_webhook", "wecom_longconn_bot", "telegram", "cli"]
     assert channels[1].on_receive is message_handler
     assert channels[2].on_receive is message_handler
-    assert channels[2].agent is agent
+    assert channels[3].on_receive is message_handler
+    assert channels[3].agent is agent
 
 
 @pytest.mark.asyncio
