@@ -18,6 +18,7 @@ class WeComLongConnBotSettings(BaseSettings):
     secret: str = Field(default="", description="WeCom smart bot Secret.")
     pairing_code: str = Field(default="", description="Optional interactive pairing code.")
     config_key: str = Field(default="", description="Optional config key returned during pairing.")
+    ready_timeout_seconds: float = Field(default=5.0, description="Seconds to wait for the bridge ready frame.")
 
 
 class WeComLongConnBotChannel(BridgeChannel):
@@ -61,3 +62,7 @@ class WeComLongConnBotChannel(BridgeChannel):
     @property
     def command(self) -> Sequence[str]:
         return split_command(self._settings.command)
+
+    @property
+    def ready_timeout_seconds(self) -> float:
+        return self._settings.ready_timeout_seconds
