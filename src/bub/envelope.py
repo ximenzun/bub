@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from bub.social.types import to_primitive
 from bub.types import Envelope
 
 
@@ -26,9 +27,9 @@ def normalize_envelope(message: Envelope) -> dict[str, Any]:
     """Convert arbitrary message objects to a mutable envelope mapping."""
 
     if isinstance(message, Mapping):
-        return dict(message)
+        return to_primitive(dict(message))
     if hasattr(message, "__dict__"):
-        return dict(vars(message))
+        return to_primitive(dict(vars(message)))
     return {"content": str(message)}
 
 

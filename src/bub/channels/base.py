@@ -3,6 +3,7 @@ from abc import ABC, abstractmethod
 from typing import ClassVar
 
 from bub.channels.message import ChannelMessage
+from bub.social import ChannelCapabilities, basic_channel_capabilities
 
 
 class Channel(ABC):
@@ -22,6 +23,11 @@ class Channel(ABC):
     def needs_debounce(self) -> bool:
         """Whether this channel needs debounce to prevent overload. Default to False."""
         return False
+
+    @property
+    def capabilities(self) -> ChannelCapabilities:
+        """Structured capability metadata for richer social-channel integrations."""
+        return basic_channel_capabilities(self.name)
 
     async def send(self, message: ChannelMessage) -> None:
         """Send a message to the channel. Optional to implement."""

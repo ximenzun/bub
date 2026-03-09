@@ -11,6 +11,7 @@ from bub.channels.handler import BufferedMessageHandler
 from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel
+from bub.social import ConversationRef, ReplyGrant
 
 
 class FakeChannel:
@@ -128,6 +129,8 @@ async def test_channel_manager_dispatch_uses_output_channel_and_preserves_metada
     assert outbound.content == "hello"
     assert outbound.kind == "command"
     assert outbound.context["source"] == "test"
+    assert outbound.actions[0].kind == "send_message"
+    assert outbound.conversation == ConversationRef(platform="cli", chat_id="room", account_id="default")
 
 
 def test_channel_manager_enabled_channels_excludes_cli_from_all() -> None:
@@ -277,7 +280,12 @@ async def test_telegram_channel_build_message_returns_command_directly() -> None
     channel = TelegramChannel(lambda message: None)
     channel._parser = SimpleNamespace(parse=_async_return((",help", {"type": "text"})), get_reply=_async_return(None))
 
-    message = SimpleNamespace(chat_id=42)
+    message = SimpleNamespace(
+        chat_id=42,
+        message_id=7,
+        chat=SimpleNamespace(type="private"),
+        from_user=SimpleNamespace(id=8, full_name="Alice", username="alice", is_bot=False),
+    )
 
     result = await channel._build_message(message)
 
@@ -285,6 +293,8 @@ async def test_telegram_channel_build_message_returns_command_directly() -> None
     assert result.chat_id == "42"
     assert result.content == ",help"
     assert result.output_channel == "telegram"
+    assert result.message_id == "7"
+    assert result.reply_grant == ReplyGrant(mode="message_id", reply_to_message_id="7")
 
 
 @pytest.mark.asyncio
@@ -299,7 +309,12 @@ async def test_telegram_channel_build_message_wraps_payload_and_disables_outboun
     channel._parser = parser
     monkeypatch.setattr("bub.channels.telegram.MESSAGE_FILTER.filter", lambda message: True)
 
-    message = SimpleNamespace(chat_id=42)
+    message = SimpleNamespace(
+        chat_id=42,
+        message_id=7,
+        chat=SimpleNamespace(type="group"),
+        from_user=SimpleNamespace(id=8, full_name="Alice", username="alice", is_bot=False),
+    )
 
     result = await channel._build_message(message)
 
@@ -309,6 +324,60 @@ async def test_telegram_channel_build_message_wraps_payload_and_disables_outboun
     assert '"chat_id": "42"' in result.content
     assert '"reply_to_message"' in result.content
     assert result.lifespan is not None
+    assert result.conversation == ConversationRef(platform="telegram", chat_id="42", account_id="default", surface="group")
+    assert result.reply_grant == ReplyGrant(mode="message_id", reply_to_message_id="7")
+
+
+@pytest.mark.asyncio
+async def test_telegram_channel_send_supports_reply_and_edit_actions() -> None:
+    channel = TelegramChannel(lambda message: None)
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def send_message(**kwargs) -> None:
+        events.append(("send", kwargs))
+
+    async def edit_message_text(**kwargs) -> None:
+        events.append(("edit", kwargs))
+
+    channel._app = SimpleNamespace(bot=SimpleNamespace(send_message=send_message, edit_message_text=edit_message_text))
+
+    await channel.send(
+        _message(
+            "ignored",
+            chat_id="42",
+            channel="telegram",
+            session_id="telegram:42",
+            kind="normal",
+        )
+    )
+    await channel.send(
+        ChannelMessage(
+            session_id="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            content="ignored",
+            actions=[
+                {
+                    "kind": "reply_message",
+                    "text": "hello",
+                    "reply_to_message_id": "5",
+                    "conversation": {"platform": "telegram", "chat_id": "42", "surface": "direct"},
+                },
+                {
+                    "kind": "edit_message",
+                    "text": "updated",
+                    "message_id": "9",
+                    "conversation": {"platform": "telegram", "chat_id": "42", "surface": "direct"},
+                },
+            ],
+        )
+    )
+
+    assert events == [
+        ("send", {"chat_id": "42", "text": "ignored"}),
+        ("send", {"chat_id": "42", "text": "hello", "reply_to_message_id": 5}),
+        ("edit", {"chat_id": "42", "message_id": 9, "text": "updated"}),
+    ]
 
 
 def _async_return(value):

@@ -16,6 +16,15 @@ from telegram.ext import MessageHandler as TelegramMessageHandler
 
 from bub.channels.base import Channel
 from bub.channels.message import ChannelMessage
+from bub.social import (
+    ActionConstraint,
+    Attachment,
+    ChannelCapabilities,
+    ConversationRef,
+    ParticipantRef,
+    ReplyGrant,
+    normalize_surface,
+)
 from bub.types import MessageHandler
 from bub.utils import exclude_none
 
@@ -132,6 +141,20 @@ class TelegramChannel(Channel):
     def needs_debounce(self) -> bool:
         return True
 
+    @property
+    def capabilities(self) -> ChannelCapabilities:
+        return ChannelCapabilities(
+            platform=self.name,
+            supported_actions=frozenset({"send_message", "reply_message", "edit_message", "presence"}),
+            progress_surfaces=frozenset({"presence"}),
+            supports_rich_text=True,
+            supports_attachments=True,
+            constraints={
+                "edit_message": ActionConstraint(requires_ownership=True),
+                "presence": ActionConstraint(rate_limit_qps=0.25),
+            },
+        )
+
     async def start(self, stop_event: asyncio.Event) -> None:
         proxy = self._settings.proxy
         logger.info(
@@ -170,6 +193,9 @@ class TelegramChannel(Channel):
         logger.info("telegram.stopped")
 
     async def send(self, message: ChannelMessage) -> None:
+        if message.actions:
+            await self._send_actions(message)
+            return
         chat_id = message.chat_id
         content = message.content
         try:
@@ -180,6 +206,36 @@ class TelegramChannel(Channel):
         if not text.strip():
             return
         await self._app.bot.send_message(chat_id=chat_id, text=text)
+
+    async def _send_actions(self, message: ChannelMessage) -> None:
+        for action in message.actions:
+            chat_id = action.conversation.chat_id if action.conversation is not None else message.chat_id
+            match action.kind:
+                case "send_message" | "reply_message":
+                    text = action.text or ""
+                    if not text.strip():
+                        continue
+                    kwargs: dict[str, Any] = {}
+                    reply_to = action.reply_to_message_id or (
+                        action.reply_grant.reply_to_message_id if action.reply_grant is not None else None
+                    )
+                    if reply_to is not None:
+                        with contextlib.suppress(ValueError):
+                            kwargs["reply_to_message_id"] = int(reply_to)
+                    await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+                case "edit_message":
+                    text = action.text or ""
+                    if not text.strip() or action.message_id is None:
+                        continue
+                    await self._app.bot.edit_message_text(
+                        chat_id=chat_id,
+                        message_id=int(action.message_id),
+                        text=text,
+                    )
+                case "presence":
+                    await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
+                case _:
+                    logger.warning("telegram.send unsupported action kind={}", action.kind)
 
     async def _on_start(self, update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message is None:
@@ -208,12 +264,39 @@ class TelegramChannel(Channel):
         chat_id = str(message.chat_id)
         session_id = f"{self.name}:{chat_id}"
         content, metadata = await self._parser.parse(message)
+        sender = None
+        if message.from_user is not None:
+            sender = ParticipantRef(
+                id=str(message.from_user.id),
+                id_kind="telegram_user_id",
+                display_name=message.from_user.full_name,
+                username=message.from_user.username,
+                is_bot=message.from_user.is_bot,
+            )
+        attachments = self._attachments_from_metadata(metadata)
+        conversation = ConversationRef(
+            platform=self.name,
+            chat_id=chat_id,
+            surface=normalize_surface(message.chat.type),
+        )
+        reply_grant = ReplyGrant(mode="message_id", reply_to_message_id=str(message.message_id))
         if content.startswith("/bub "):
             content = content[5:]
 
         # Pass comma commands directly to the input handler
         if content.strip().startswith(","):
-            return ChannelMessage(session_id=session_id, content=content.strip(), channel=self.name, chat_id=chat_id)
+            return ChannelMessage(
+                session_id=session_id,
+                content=content.strip(),
+                channel=self.name,
+                chat_id=chat_id,
+                conversation=conversation,
+                sender=sender,
+                message_id=str(message.message_id),
+                reply_grant=reply_grant,
+                attachments=attachments,
+                metadata={"telegram": metadata},
+            )
 
         reply_meta = await self._parser.get_reply(message)
         if reply_meta:
@@ -228,7 +311,20 @@ class TelegramChannel(Channel):
             is_active=is_active,
             lifespan=self.start_typing(chat_id),
             output_channel="null",  # disable outbound for telegram messages
+            message_id=str(message.message_id),
+            conversation=conversation,
+            sender=sender,
+            reply_grant=reply_grant,
+            attachments=attachments,
+            metadata={"telegram": metadata},
         )
+
+    @staticmethod
+    def _attachments_from_metadata(metadata: dict[str, Any]) -> list[Attachment]:
+        media = metadata.get("media")
+        if not isinstance(media, dict):
+            return []
+        return [Attachment.from_mapping(media)]
 
     @contextlib.asynccontextmanager
     async def start_typing(self, chat_id: str) -> AsyncGenerator[None, None]:
