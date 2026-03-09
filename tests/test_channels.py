@@ -506,41 +506,22 @@ def test_wecom_webhook_channel_upload_url_derives_key_and_type() -> None:
 
 
 @pytest.mark.asyncio
-async def test_wecom_longconn_bot_channel_start_and_send_via_bridge(tmp_path: Path) -> None:
-    script = tmp_path / "bridge.py"
-    output = tmp_path / "output.jsonl"
-    script.write_text(
-        """
-import json
-import pathlib
-import sys
-
-path = pathlib.Path(sys.argv[1])
-print(json.dumps({
-    "type": "message",
-    "message": {
-        "session_id": "wecom:chat-1",
-        "channel": "wecom_longconn_bot",
-        "chat_id": "chat-1",
-        "content": "hello from bridge"
-    }
-}), flush=True)
-line = sys.stdin.readline()
-path.write_text(line, encoding="utf-8")
-""".strip(),
-        encoding="utf-8",
-    )
-
+async def test_wecom_longconn_bot_channel_start_and_send_via_bridge() -> None:
     received: list[ChannelMessage] = []
 
     async def on_receive(message: ChannelMessage) -> None:
         received.append(message)
 
     channel = WeComLongConnBotChannel(on_receive=on_receive)
-    channel._settings.command = f"{sys.executable} -u {script} {output}"
+    channel._settings.command = (
+        f"{sys.executable} -m bub.channels.dev_bridge "
+        "--channel wecom_longconn_bot --chat-id chat-1 --boot-message 'hello from bridge' --echo-actions"
+    )
 
     await channel.start(asyncio.Event())
-    await asyncio.sleep(0.1)
+    assert channel.is_ready is True
+    assert channel.bridge_info["channel"] == "wecom_longconn_bot"
+    await asyncio.sleep(0.2)
     await channel.send(
         OutboundAction(
             kind="send_message",
@@ -554,12 +535,13 @@ path.write_text(line, encoding="utf-8")
             text="ping",
         )
     )
-    await asyncio.sleep(0.1)
+    await asyncio.sleep(0.2)
     await channel.stop()
 
+    assert channel.is_ready is False
     assert received[0].channel == "wecom_longconn_bot"
     assert received[0].content == "hello from bridge"
-    assert '"kind": "send_message"' in output.read_text(encoding="utf-8")
+    assert received[1].content == "echo: ping"
 
 
 def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
@@ -578,6 +560,7 @@ def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
     assert channel.capabilities.adapter_mode == "bridge"
     assert channel.capabilities.provisioning.mode == "interactive_pairing"
     assert channel.capabilities.provisioning.pairing_code == "PAIR-123"
+    assert channel.ready_timeout_seconds == 5.0
 
 
 def _async_return(value):
