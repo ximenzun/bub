@@ -8,7 +8,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 
 from bub.channels.bridge import BridgeChannel, run_command, split_command
 from bub.channels.bridge_protocol import build_configure_frame
-from bub.social import ChannelCapabilities, ContentConstraint, CredentialSpec, ProvisioningInfo
+from bub.social import ActionConstraint, ChannelCapabilities, ContentConstraint, CredentialSpec, ProvisioningInfo
 from bub.types import MessageHandler
 
 
@@ -40,13 +40,13 @@ class WeComLongConnBotChannel(BridgeChannel):
 
     @property
     def capabilities(self) -> ChannelCapabilities:
-        state = "active" if self._settings.command else "pending"
+        state = "active" if self.command else "pending"
         return ChannelCapabilities(
             platform="wecom",
             adapter_mode="bridge",
             transport="long_connection",
             provisioning_mode="interactive_pairing",
-            supported_actions=frozenset({"send_message", "reply_message", "edit_message", "presence"}),
+            supported_actions=frozenset({"send_message", "reply_message", "update_card"}),
             supports_rich_text=True,
             supports_cards=True,
             supports_attachments=True,
@@ -73,9 +73,20 @@ class WeComLongConnBotChannel(BridgeChannel):
                 pairing_code=self._settings.pairing_code or None,
                 config_key=self._settings.config_key or None,
             ),
+            constraints={
+                "send_message": ActionConstraint(notes=("proactive sends support markdown and template cards only",)),
+                "reply_message": ActionConstraint(notes=("passive replies support text, markdown, template cards, and image replies",)),
+                "update_card": ActionConstraint(
+                    max_age_seconds=5,
+                    notes=("requires a reply_grant token from a WeCom template_card_event callback",),
+                ),
+            },
             content_constraints={
                 "text": ContentConstraint(max_body_bytes=2048, supports_mentions=True),
                 "rich_text": ContentConstraint(max_body_bytes=4096, supports_mentions=True),
+                "image": ContentConstraint(notes=("reply-only",)),
+                "audio": ContentConstraint(notes=("not supported for outbound long-connection replies",)),
+                "file": ContentConstraint(notes=("not supported for outbound long-connection replies",)),
                 "card": ContentConstraint(notes=("template_card",)),
             },
         )

@@ -57,6 +57,25 @@ def test_attachments_of_coerces_mapping_payloads() -> None:
     assert attachments == [Attachment(content_type="image/png", url="https://example.test/image.png", file_key="abc")]
 
 
+def test_outbound_action_from_mapping_preserves_native_card_fields() -> None:
+    request_id = "req-1"
+    action = OutboundAction.from_mapping(
+        {
+            "kind": "update_card",
+            "conversation": {"platform": "wecom", "chat_id": "chat-1"},
+            "content_type": "card",
+            "card": {"card_type": "text_notice", "main_title": {"title": "hello"}},
+            "target_ids": ["zhangsan"],
+            "reply_grant": {"mode": "token", "token": request_id},
+        }
+    )
+
+    assert action.kind == "update_card"
+    assert action.card == {"card_type": "text_notice", "main_title": {"title": "hello"}}
+    assert action.target_ids == ["zhangsan"]
+    assert action.reply_grant == ReplyGrant(mode="token", token=request_id)
+
+
 def test_inbound_event_of_uses_richer_channel_message_metadata() -> None:
     message = ChannelMessage(
         session_id="session",

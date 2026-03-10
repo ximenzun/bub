@@ -1,6 +1,8 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
+import { createHash } from "node:crypto";
+import { fileURLToPath } from "node:url";
 
 const BRIDGE_PROTOCOL_VERSION = "1";
 
@@ -56,8 +58,11 @@ function parseArgs(argv) {
 }
 
 function inferWeComMsgtype(action) {
-  if (action.metadata?.wecom_msgtype) return String(action.metadata.wecom_msgtype);
+  if (action.card) return "template_card";
   if (action.content_type === "card") return "template_card";
+  if (action.content_type === "image") return "image";
+  if (action.content_type === "audio") return "voice";
+  if (action.content_type === "file") return "file";
   if (action.content_type === "rich_text") return "markdown";
   return "text";
 }
@@ -76,73 +81,179 @@ function buildMentionLists(mentions = []) {
   return { mentioned_list, mentioned_mobile_list };
 }
 
-async function actionToRequest(action, runtime) {
-  const msgtype = inferWeComMsgtype(action);
-  const reqId = action.reply_grant?.token || action.metadata?.wecom_req_id || null;
-  const eventType = action.metadata?.wecom_event_type || null;
-  const frameHeaders = reqId ? { headers: { req_id: reqId } } : null;
-  const text = action.text || "";
+function buildTextPayload(action) {
+  const { mentioned_list, mentioned_mobile_list } = buildMentionLists(action.mentions);
+  const payload = { content: action.text || "" };
+  if (mentioned_list.length > 0) payload.mentioned_list = mentioned_list;
+  if (mentioned_mobile_list.length > 0) payload.mentioned_mobile_list = mentioned_mobile_list;
+  return payload;
+}
 
-  if (eventType === "enter_chat" && frameHeaders) {
-    if (msgtype === "template_card" && action.metadata?.template_card) {
-      return { mode: "welcome", op: "replyWelcome", args: [frameHeaders, { msgtype: "template_card", template_card: action.metadata.template_card }] };
-    }
-    return { mode: "welcome", op: "replyWelcome", args: [frameHeaders, { msgtype: "text", text: { content: text } }] };
+function buildMarkdownContent(action) {
+  const { mentioned_list, mentioned_mobile_list } = buildMentionLists(action.mentions);
+  const markdownContent = [action.text || ""];
+  if (mentioned_list.length > 0) markdownContent.push(`\n${mentioned_list.map((item) => `<@${item}>`).join(" ")}`);
+  if (mentioned_mobile_list.length > 0) markdownContent.push(`\n${mentioned_mobile_list.join(" ")}`);
+  return markdownContent.join("");
+}
+
+function templateCardOf(action) {
+  if (action.card && typeof action.card === "object" && !Array.isArray(action.card)) {
+    return action.card;
   }
+  throw new Error("WeCom template cards require action.card.");
+}
 
-  if (action.kind === "update_card" && frameHeaders && action.metadata?.template_card) {
+function replyContextOf(action) {
+  const grant = action.reply_grant && typeof action.reply_grant === "object" ? action.reply_grant : {};
+  const metadata = grant.metadata && typeof grant.metadata === "object" ? grant.metadata : {};
+  return {
+    reqId: grant.token || null,
+    eventType: metadata.event_type || null,
+    responseUrl: metadata.response_url || null,
+  };
+}
+
+function streamIdOf(action) {
+  return action.live_surface?.surface_id || `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+function normalizeTargetIds(action) {
+  return Array.isArray(action.target_ids) && action.target_ids.length > 0 ? action.target_ids.map((item) => String(item)) : undefined;
+}
+
+async function readBinarySource(source, suggestedName = null) {
+  if (!source) throw new Error("missing outbound binary source");
+  if (source.startsWith("data:")) {
+    const [header, encoded = ""] = source.split(",", 2);
+    const raw = header.includes(";base64") ? Buffer.from(encoded, "base64") : Buffer.from(decodeURIComponent(encoded), "utf8");
+    return { buffer: raw, filename: suggestedName };
+  }
+  if (source.startsWith("http://") || source.startsWith("https://")) {
+    const response = await fetch(source);
+    if (!response.ok) {
+      throw new Error(`failed to fetch outbound attachment: ${response.status} ${response.statusText}`);
+    }
+    const url = new URL(source);
     return {
-      mode: "event_update",
-      op: "updateTemplateCard",
-      args: [frameHeaders, action.metadata.template_card, action.metadata?.userids || undefined],
+      buffer: Buffer.from(await response.arrayBuffer()),
+      filename: suggestedName || path.basename(url.pathname) || null,
     };
   }
+  const localPath = source.startsWith("file://") ? fileURLToPath(source) : source;
+  return { buffer: await fs.readFile(localPath), filename: suggestedName || path.basename(localPath) || null };
+}
 
-  if (frameHeaders) {
-    if (msgtype === "template_card" && action.metadata?.template_card) {
-      return { mode: "passive_reply", op: "replyTemplateCard", args: [frameHeaders, action.metadata.template_card] };
-    }
+async function readActionBinarySource(action) {
+  const attachment = Array.isArray(action.attachments) && action.attachments.length > 0 ? action.attachments[0] : null;
+  const attachmentPath = attachment?.metadata?.path ? String(attachment.metadata.path) : null;
+  const source = attachment?.url || attachmentPath || action.text || null;
+  if (!source) {
+    throw new Error("WeCom outbound media actions require an attachment or a text source path/URL.");
+  }
+  return readBinarySource(String(source), attachment?.name || null);
+}
 
-    const streamId = action.metadata?.wecom_stream_id || `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
-    let msgItem;
-    if (Array.isArray(action.attachments) && action.attachments.length > 0) {
-      const imageAttachment = action.attachments.find((item) => String(item.content_type || "").startsWith("image/"));
-      if (imageAttachment?.url?.startsWith("data:")) {
-        const encoded = imageAttachment.url.split(",", 2)[1];
-        const buffer = Buffer.from(encoded, "base64");
-        msgItem = [{
-          msgtype: "image",
-          image: {
-            base64: buffer.toString("base64"),
-            md5: (await import("node:crypto")).createHash("md5").update(buffer).digest("hex"),
-          },
-        }];
-      }
+async function buildImageReplyItem(action) {
+  const { buffer } = await readActionBinarySource(action);
+  return {
+    msgtype: "image",
+    image: {
+      base64: buffer.toString("base64"),
+      md5: createHash("md5").update(buffer).digest("hex"),
+    },
+  };
+}
+
+function buildWelcomeBody(action) {
+  if (action.card) {
+    return { msgtype: "template_card", template_card: templateCardOf(action) };
+  }
+  return { msgtype: "text", text: buildTextPayload(action) };
+}
+
+async function buildPassiveReplyRequest(action, frameHeaders, msgtype) {
+  if (msgtype === "template_card") {
+    const templateCard = templateCardOf(action);
+    if ((action.text || "").trim()) {
+      return {
+        mode: "passive_reply",
+        op: "replyStreamWithCard",
+        args: [frameHeaders, streamIdOf(action), action.text || "", true, { templateCard }],
+      };
     }
+    return { mode: "passive_reply", op: "replyTemplateCard", args: [frameHeaders, templateCard] };
+  }
+  if (msgtype === "text") {
+    return { mode: "passive_reply", op: "reply", args: [frameHeaders, { msgtype: "text", text: buildTextPayload(action) }] };
+  }
+  if (msgtype === "markdown") {
     return {
       mode: "passive_reply",
       op: "replyStream",
-      args: [frameHeaders, streamId, text, true, msgItem],
+      args: [frameHeaders, streamIdOf(action), buildMarkdownContent(action), true],
     };
   }
+  if (msgtype === "image") {
+    return {
+      mode: "passive_reply",
+      op: "replyStream",
+      args: [frameHeaders, streamIdOf(action), action.text || "", true, [await buildImageReplyItem(action)]],
+    };
+  }
+  throw new Error(`WeCom long-connection does not support passive outbound msgtype '${msgtype}'.`);
+}
 
-  if (msgtype === "template_card" && action.metadata?.template_card) {
+function buildProactiveRequest(action, msgtype) {
+  if (msgtype === "template_card") {
     return {
       mode: "proactive_reply",
       op: "sendMessage",
-      args: [action.conversation?.chat_id, { msgtype: "template_card", template_card: action.metadata.template_card }],
+      args: [action.conversation?.chat_id, { msgtype: "template_card", template_card: templateCardOf(action) }],
+    };
+  }
+  if (msgtype === "text" || msgtype === "markdown") {
+    return {
+      mode: "proactive_reply",
+      op: "sendMessage",
+      args: [action.conversation?.chat_id, { msgtype: "markdown", markdown: { content: buildMarkdownContent(action) } }],
+    };
+  }
+  throw new Error(`WeCom long-connection does not support proactive outbound msgtype '${msgtype}'.`);
+}
+
+async function actionToRequest(action) {
+  const msgtype = inferWeComMsgtype(action);
+  const { reqId, eventType } = replyContextOf(action);
+  const frameHeaders = reqId ? { headers: { req_id: reqId } } : null;
+
+  if (action.kind === "edit_message") {
+    throw new Error("WeCom long-connection does not support edit_message. Use update_card.");
+  }
+
+  if (action.kind === "update_card") {
+    if (!frameHeaders) {
+      throw new Error("WeCom update_card requires a reply_grant token.");
+    }
+    return {
+      mode: "event_update",
+      op: "updateTemplateCard",
+      args: [frameHeaders, templateCardOf(action), normalizeTargetIds(action)],
     };
   }
 
-  const { mentioned_list, mentioned_mobile_list } = buildMentionLists(action.mentions);
-  const markdownContent = [text];
-  if (mentioned_list.length > 0) markdownContent.push(`\n${mentioned_list.map((item) => `<@${item}>`).join(" ")}`);
-  if (mentioned_mobile_list.length > 0) markdownContent.push(`\n${mentioned_mobile_list.join(" ")}`);
-  return {
-    mode: "proactive_reply",
-    op: "sendMessage",
-    args: [action.conversation?.chat_id, { msgtype: "markdown", markdown: { content: markdownContent.join("") } }],
-  };
+  if (eventType === "enter_chat" && frameHeaders) {
+    if (msgtype !== "text" && msgtype !== "markdown" && msgtype !== "template_card") {
+      throw new Error(`WeCom welcome replies do not support msgtype '${msgtype}'.`);
+    }
+    return { mode: "welcome", op: "replyWelcome", args: [frameHeaders, buildWelcomeBody(action)] };
+  }
+
+  if (frameHeaders) {
+    return buildPassiveReplyRequest(action, frameHeaders, msgtype);
+  }
+
+  return buildProactiveRequest(action, msgtype);
 }
 
 async function parseIncomingFrame(frame, wsClient, state) {
@@ -180,10 +291,11 @@ async function parseIncomingFrame(frame, wsClient, state) {
           mode: "token",
           token: reqId,
           reply_to_message_id: body.msgid,
+          metadata: {
+            event_type: eventType,
+          },
         },
         metadata: {
-          wecom_req_id: reqId,
-          wecom_event_type: eventType,
           wecom_raw_msgtype: "event",
         },
       },
@@ -254,11 +366,13 @@ async function parseIncomingFrame(frame, wsClient, state) {
         mode: "token",
         token: reqId,
         reply_to_message_id: body.msgid,
+        metadata: {
+          response_url: body.response_url || null,
+          raw_msgtype: body.msgtype || null,
+        },
       },
       attachments,
       metadata: {
-        wecom_req_id: reqId,
-        wecom_response_url: body.response_url || null,
         wecom_raw_msgtype: body.msgtype || null,
       },
     },
@@ -380,6 +494,14 @@ async function mainAsync() {
 
       if (frame.type === "action") {
         const action = frame.action || {};
+        let request;
+        try {
+          request = await actionToRequest(action, state);
+          emit(buildLog("translated action", "debug", { request }));
+        } catch (error) {
+          emit(buildLog("failed to translate action", "error", { error: String(error) }));
+          continue;
+        }
         if (state.mock) {
           emit(buildLog(`received action ${action.kind || "unknown"}`));
           if (state.echoActions && action.text) {
@@ -400,8 +522,6 @@ async function mainAsync() {
           emit(buildLog("WSClient not configured", "error"));
           continue;
         }
-        const request = await actionToRequest(action, state);
-        emit(buildLog("translated action", "debug", { request }));
         try {
           await state.wsClient[request.op](...request.args);
         } catch (error) {

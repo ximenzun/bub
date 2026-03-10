@@ -494,6 +494,34 @@ async def test_wecom_webhook_channel_send_file_uploads_media_first(
     assert sent == [{"msgtype": "file", "file": {"media_id": "MEDIA123"}}]
 
 
+@pytest.mark.asyncio
+async def test_wecom_webhook_channel_send_template_card_uses_native_card_field(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = WeComWebhookChannel()
+    channel._settings.webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
+    sent: list[dict[str, object]] = []
+
+    async def post_json(payload: dict[str, object]) -> None:
+        sent.append(payload)
+
+    monkeypatch.setattr(channel, "_post_json", post_json)
+
+    await channel.send(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="wecom", route_channel="wecom_webhook", chat_id="room"),
+            content_type="card",
+            card={"card_type": "text_notice", "main_title": {"title": "hello"}},
+        )
+    )
+
+    assert sent == [
+        {
+            "msgtype": "template_card",
+            "template_card": {"card_type": "text_notice", "main_title": {"title": "hello"}},
+        }
+    ]
+
+
 def test_wecom_webhook_channel_upload_url_derives_key_and_type() -> None:
     channel = WeComWebhookChannel()
     channel._settings.webhook_url = "https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=test-key"
@@ -576,7 +604,9 @@ def test_wecom_longconn_bot_channel_capabilities_and_command_parsing() -> None:
     assert channel.capabilities.transport == "long_connection"
     assert channel.capabilities.adapter_mode == "bridge"
     assert channel.capabilities.provisioning.mode == "interactive_pairing"
+    assert channel.capabilities.provisioning.state == "active"
     assert channel.capabilities.provisioning.pairing_code == "PAIR-123"
+    assert channel.capabilities.supported_actions == frozenset({"send_message", "reply_message", "update_card"})
     assert channel.ready_timeout_seconds == 5.0
     assert [item.key for item in channel.capabilities.credential_specs] == [
         "bot_id",
@@ -597,6 +627,7 @@ def test_wecom_longconn_bot_channel_uses_bundled_bridge_when_credentials_present
     assert command[0] == "node"
     assert command[1].endswith("src/bub/channels/node/wecom_longconn_bridge.mjs")
     assert command[-2:] == ["--channel", "wecom_longconn_bot"]
+    assert channel.capabilities.provisioning.state == "active"
 
 
 def test_wecom_longconn_bot_channel_appends_mock_flag_for_bundled_bridge() -> None:
