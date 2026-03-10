@@ -90,6 +90,10 @@ class WeComWebhookChannel(Channel):
     async def send(self, action: OutboundAction) -> None:
         if not self._settings.webhook_url:
             raise RuntimeError("WeCom webhook URL is not configured.")
+        if action.kind == "update_card":
+            raise RuntimeError("WeCom webhook does not support update_card.")
+        if action.kind == "edit_message":
+            raise RuntimeError("WeCom webhook does not support edit_message.")
         payload = await self._build_payload(action)
         await self._post_json(payload)
 
@@ -98,7 +102,7 @@ class WeComWebhookChannel(Channel):
         if isinstance(raw_payload, dict):
             return raw_payload
 
-        msgtype = str(action.metadata.get("wecom_msgtype") or self._infer_msgtype(action))
+        msgtype = self._infer_msgtype(action)
         if msgtype == "text":
             return self._build_text_payload(action)
         if msgtype in {"markdown", "markdown_v2"}:
@@ -107,8 +111,6 @@ class WeComWebhookChannel(Channel):
             return await self._build_image_payload(action)
         if msgtype in {"file", "voice"}:
             return await self._build_uploaded_media_payload(msgtype, action)
-        if msgtype == "news":
-            return self._build_news_payload(action)
         if msgtype == "template_card":
             return self._build_template_card_payload(action)
         raise ValueError(f"Unsupported WeCom webhook msgtype: {msgtype}")
@@ -164,9 +166,9 @@ class WeComWebhookChannel(Channel):
 
     @staticmethod
     def _build_template_card_payload(action: OutboundAction) -> dict[str, object]:
-        template_card = action.metadata.get("template_card")
+        template_card = action.card
         if not isinstance(template_card, dict):
-            raise TypeError("WeCom template_card messages require metadata['template_card'].")
+            raise TypeError("WeCom template_card messages require action.card.")
         return {"msgtype": "template_card", "template_card": template_card}
 
     async def _upload_media(self, media_type: str, action: OutboundAction) -> str:
@@ -246,7 +248,7 @@ class WeComWebhookChannel(Channel):
 
     @staticmethod
     def _infer_msgtype(action: OutboundAction) -> str:
-        if action.content_type == "card":
+        if action.card is not None or action.content_type == "card":
             return "template_card"
         if action.content_type == "image":
             return "image"

@@ -7,7 +7,7 @@ Bub uses channel adapters to run the same agent pipeline across different I/O en
 - `cli`: local interactive terminal channel (`uv run bub chat`)
 - `telegram`: Telegram bot channel (`uv run bub gateway`)
 - `wecom_webhook`: Enterprise WeCom webhook push channel (outbound-only)
-- `wecom_longconn_bot`: Enterprise WeCom smart-bot bridge channel (skeleton)
+- `wecom_longconn_bot`: Enterprise WeCom smart-bot bridge channel
 
 See [Telegram](telegram.md) for channel-specific configuration and runtime behavior.
 
@@ -53,8 +53,10 @@ uv run bub gateway --enable-channel wecom_webhook
 
 - `wecom_webhook` is currently outbound-only.
 - It targets the Enterprise WeCom webhook push surface (`/cgi-bin/webhook/send`).
-- `wecom_longconn_bot` is a subprocess bridge skeleton for the long-connection smart-bot surface.
+- `wecom_longconn_bot` uses the bundled Node bridge plus the official `@wecom/aibot-node-sdk`.
 - When `BUB_WECOM_LONGCONN_BOT_ID` and `BUB_WECOM_LONGCONN_SECRET` are configured, the long-connection adapter will default to the bundled `bub.channels.wecom_longconn_bridge` runner.
+- Proactive long-connection sends currently target the SDK's native `markdown` and `template_card` surfaces.
+- Passive long-connection replies support text, markdown, template cards, and image replies. Card updates use the native `update_card` action.
 - For development, you can point `BUB_WECOM_LONGCONN_COMMAND` at the bundled dev bridge, for example:
 
 ```bash

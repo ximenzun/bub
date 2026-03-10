@@ -111,6 +111,17 @@ async def _handle_action(frame: dict[str, Any], state: _BridgeState, *, echo_act
 
 
 def translate_action_to_wecom_request(action: OutboundAction) -> dict[str, Any]:
+    if action.kind == "edit_message":
+        raise RuntimeError("WeCom long-connection does not support edit_message. Use update_card.")
+    if action.kind == "update_card":
+        if not isinstance(action.card, dict):
+            raise TypeError("WeCom update_card requires action.card.")
+        return {
+            "mode": "event_update",
+            "msgtype": "template_card",
+            "conversation": action.conversation.as_dict() if action.conversation is not None else None,
+            "payload": {"template_card": action.card, "target_ids": action.target_ids or None},
+        }
     msgtype = infer_wecom_msgtype(action)
     mode = "passive_reply" if action.reply_to_message_id or action.reply_grant else "proactive_reply"
     request: dict[str, Any] = {
@@ -125,20 +136,23 @@ def translate_action_to_wecom_request(action: OutboundAction) -> dict[str, Any]:
         request["payload"] = {msgtype: {"content": action.text or ""}}
         return request
     if msgtype == "template_card":
-        request["payload"] = {"template_card": action.metadata.get("template_card", {})}
-        return request
-    if msgtype == "event_ack":
-        request["payload"] = {"event_id": action.metadata.get("event_id")}
+        if not isinstance(action.card, dict):
+            raise TypeError("WeCom template_card messages require action.card.")
+        request["payload"] = {"template_card": action.card}
         return request
     request["payload"] = {"content": action.text or "", "metadata": action.metadata}
     return request
 
 
 def infer_wecom_msgtype(action: OutboundAction) -> str:
-    if action.metadata.get("wecom_msgtype"):
-        return str(action.metadata["wecom_msgtype"])
-    if action.content_type == "card":
+    if action.card is not None or action.content_type == "card":
         return "template_card"
+    if action.content_type == "image":
+        return "image"
+    if action.content_type == "audio":
+        return "voice"
+    if action.content_type == "file":
+        return "file"
     if action.content_type == "rich_text":
         return "markdown"
     return "text"

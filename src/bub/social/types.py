@@ -406,11 +406,13 @@ class OutboundAction:
     conversation: ConversationRef | None = None
     text: str | None = None
     content_type: ContentKind = "text"
+    card: dict[str, Any] | None = None
     message_id: str | None = None
     reply_to_message_id: str | None = None
     reply_grant: ReplyGrant | None = None
     attachments: list[Attachment] = field(default_factory=list)
     mentions: list[MentionTarget] = field(default_factory=list)
+    target_ids: list[str] = field(default_factory=list)
     live_surface: LiveSurfaceRef | None = None
     reaction: str | None = None
     metadata: dict[str, Any] = field(default_factory=dict)
@@ -420,6 +422,8 @@ class OutboundAction:
             self.conversation = ConversationRef.from_mapping(self.conversation)
         if isinstance(self.reply_grant, Mapping):
             self.reply_grant = ReplyGrant.from_mapping(self.reply_grant)
+        if isinstance(self.card, Mapping):
+            self.card = dict(self.card)
         self.attachments = [
             item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item)) for item in self.attachments
         ]
@@ -427,6 +431,7 @@ class OutboundAction:
             item if isinstance(item, MentionTarget) else MentionTarget.from_mapping(_mapping_of(item))
             for item in self.mentions
         ]
+        self.target_ids = [str(item) for item in self.target_ids if item is not None]
         if isinstance(self.live_surface, Mapping):
             self.live_surface = LiveSurfaceRef.from_mapping(self.live_surface)
 
@@ -457,9 +462,11 @@ class OutboundAction:
             kind = "custom"
         conversation_value = data.get("conversation")
         reply_grant = data.get("reply_grant")
+        card = data.get("card")
         live_surface = data.get("live_surface")
         attachments = data.get("attachments") or []
         mentions = data.get("mentions") or []
+        target_ids = data.get("target_ids") or []
         return cls(
             kind=kind,  # type: ignore[arg-type]
             conversation=conversation_value
@@ -469,6 +476,7 @@ class OutboundAction:
             else default_conversation,
             text=_as_str(data.get("text") or data.get("content")),
             content_type=str(data.get("content_type") or "text"),  # type: ignore[arg-type]
+            card=dict(_mapping_of(card)) if card is not None else None,
             message_id=_as_str(data.get("message_id")),
             reply_to_message_id=_as_str(data.get("reply_to_message_id")),
             reply_grant=reply_grant
@@ -483,6 +491,7 @@ class OutboundAction:
                 item if isinstance(item, MentionTarget) else MentionTarget.from_mapping(_mapping_of(item))
                 for item in mentions
             ],
+            target_ids=[str(item) for item in target_ids] if isinstance(target_ids, list | tuple | set | frozenset) else [],
             live_surface=live_surface
             if isinstance(live_surface, LiveSurfaceRef)
             else LiveSurfaceRef.from_mapping(_mapping_of(live_surface))
