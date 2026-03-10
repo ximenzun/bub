@@ -185,7 +185,11 @@ async function buildPassiveReplyRequest(action, frameHeaders, msgtype) {
     return { mode: "passive_reply", op: "replyTemplateCard", args: [frameHeaders, templateCard] };
   }
   if (msgtype === "text") {
-    return { mode: "passive_reply", op: "reply", args: [frameHeaders, { msgtype: "text", text: buildTextPayload(action) }] };
+    return {
+      mode: "passive_reply",
+      op: "replyStream",
+      args: [frameHeaders, streamIdOf(action), action.text || "", true],
+    };
   }
   if (msgtype === "markdown") {
     return {
