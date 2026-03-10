@@ -1,4 +1,5 @@
 import pathlib
+from typing import Literal
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -6,6 +7,7 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_MODEL = "openrouter:qwen/qwen3-coder-next"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_HOME = pathlib.Path.home() / ".bub"
+type ApiMode = Literal["auto", "chat", "responses", "anthropic", "gemini"]
 
 
 class AgentSettings(BaseSettings):
@@ -16,6 +18,7 @@ class AgentSettings(BaseSettings):
     home: pathlib.Path = Field(default=DEFAULT_HOME)
 
     model: str = DEFAULT_MODEL
+    api_mode: ApiMode = "auto"
     api_key: str | None = None
     api_base: str | None = None
     max_steps: int = 50

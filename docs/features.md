@@ -15,6 +15,8 @@
   - comma-prefixed input enters internal command mode (`,help`, `,tools`, `,fs.read`, etc.)
   - unknown internal commands fall back to shell execution via the `bash` tool
 - Runtime events are persisted to tapes (default under `~/.bub/tapes`).
+- Model transport can be selected with `BUB_API_MODE=auto|chat|responses|anthropic|gemini`.
+- `anthropic` validates Anthropic-native usage and `gemini` validates Gemini-native usage while keeping the runtime surface lightweight.
 
 ## Channel Capability
 

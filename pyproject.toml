@@ -26,7 +26,7 @@ dependencies = [
     "pluggy>=1.6.0",
     "typer>=0.9.0",
     "republic>=0.5.3",
-    "any-llm-sdk[anthropic]",
+    "any-llm-sdk[anthropic,gemini]",
     "rich>=13.0.0",
     "prompt-toolkit>=3.0.0",
     "python-telegram-bot>=21.0",
