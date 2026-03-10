@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import contextlib
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Callable
 from typing import Any, ClassVar
@@ -11,6 +12,7 @@ from loguru import logger
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 from telegram import Bot, Message, Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 from telegram.ext import MessageHandler as TelegramMessageHandler
 
@@ -146,12 +148,16 @@ class TelegramChannel(Channel):
     def capabilities(self) -> ChannelCapabilities:
         return ChannelCapabilities(
             platform=self.name,
-            supported_actions=frozenset({"send_message", "reply_message", "edit_message", "presence"}),
-            progress_surfaces=frozenset({"presence"}),
+            supported_actions=frozenset({"send_message", "reply_message", "edit_message", "set_draft", "presence"}),
+            progress_surfaces=frozenset({"presence", "text_draft"}),
             supports_rich_text=True,
             supports_attachments=True,
             constraints={
                 "edit_message": ActionConstraint(requires_ownership=True),
+                "set_draft": ActionConstraint(
+                    rate_limit_qps=1.0,
+                    notes=("requires Telegram sendMessageDraft support and forum topic mode enabled",),
+                ),
                 "presence": ActionConstraint(rate_limit_qps=0.25),
             },
         )
@@ -197,30 +203,95 @@ class TelegramChannel(Channel):
         chat_id = action.conversation.chat_id if action.conversation is not None else "default"
         match action.kind:
             case "send_message" | "reply_message":
-                text = action.text or ""
-                if not text.strip():
-                    return
-                kwargs: dict[str, Any] = {}
-                reply_to = action.reply_to_message_id or (
-                    action.reply_grant.reply_to_message_id if action.reply_grant is not None else None
-                )
-                if reply_to is not None:
-                    with contextlib.suppress(ValueError):
-                        kwargs["reply_to_message_id"] = int(reply_to)
-                await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+                await self._send_message_action(chat_id, action)
             case "edit_message":
-                text = action.text or ""
-                if not text.strip() or action.message_id is None:
-                    return
-                await self._app.bot.edit_message_text(
-                    chat_id=chat_id,
-                    message_id=int(action.message_id),
-                    text=text,
-                )
+                await self._edit_message_action(chat_id, action)
+            case "set_draft":
+                await self._set_draft_action(chat_id, action)
             case "presence":
                 await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
             case _:
                 logger.warning("telegram.send unsupported action kind={}", action.kind)
+
+    async def _send_message_action(self, chat_id: str, action: OutboundAction) -> None:
+        text = action.text or ""
+        if not text.strip():
+            return
+        kwargs: dict[str, Any] = {}
+        reply_to = action.reply_to_message_id or (
+            action.reply_grant.reply_to_message_id if action.reply_grant is not None else None
+        )
+        if reply_to is not None:
+            with contextlib.suppress(ValueError):
+                kwargs["reply_to_message_id"] = int(reply_to)
+        await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+    async def _edit_message_action(self, chat_id: str, action: OutboundAction) -> None:
+        text = action.text or ""
+        if not text.strip() or action.message_id is None:
+            return
+        await self._app.bot.edit_message_text(
+            chat_id=chat_id,
+            message_id=int(action.message_id),
+            text=text,
+        )
+
+    async def _set_draft_action(self, chat_id: str, action: OutboundAction) -> None:
+        text = action.text or ""
+        if not text.strip():
+            return
+        try:
+            await self._app.bot.send_message_draft(
+                chat_id=chat_id,
+                draft_id=self._draft_id(action),
+                text=text,
+                message_thread_id=self._message_thread_id(action),
+            )
+        except TelegramError as exc:
+            logger.warning("telegram.send draft_fallback chat_id={} error={}", chat_id, exc)
+            if hasattr(self._app.bot, "send_chat_action"):
+                await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
+
+    @staticmethod
+    def _draft_id(action: OutboundAction) -> int:
+        if action.live_surface is not None:
+            if action.live_surface.surface_id:
+                with contextlib.suppress(ValueError):
+                    draft_id = int(action.live_surface.surface_id)
+                    if draft_id != 0:
+                        return draft_id
+            if action.live_surface.parent_message_id:
+                with contextlib.suppress(ValueError):
+                    parent_id = int(action.live_surface.parent_message_id)
+                    if parent_id != 0:
+                        return parent_id
+        for candidate in (action.reply_to_message_id, action.message_id):
+            if candidate is None:
+                continue
+            with contextlib.suppress(ValueError):
+                numeric = int(candidate)
+                if numeric != 0:
+                    return numeric
+        seed = (
+            action.live_surface.surface_id
+            if action.live_surface is not None and action.live_surface.surface_id
+            else f"{action.conversation.chat_id if action.conversation is not None else 'telegram'}:text_draft"
+        )
+        digest = hashlib.md5(seed.encode("utf-8"), usedforsecurity=False).digest()
+        return int.from_bytes(digest[:4], "big") % 2_147_483_646 + 1
+
+    @staticmethod
+    def _message_thread_id(action: OutboundAction) -> int | None:
+        candidate = None
+        if action.conversation is not None:
+            candidate = action.conversation.thread_id
+        if candidate is None and action.reply_grant is not None:
+            candidate = action.reply_grant.thread_id
+        if candidate is None:
+            return None
+        with contextlib.suppress(ValueError):
+            return int(candidate)
+        return None
 
     async def _on_start(self, update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message is None:

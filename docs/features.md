@@ -23,6 +23,7 @@
 - Builtin channels: `cli` and `telegram`.
 - `message` mode runs the same framework pipeline for channel-driven traffic.
 - Outbound delivery is routed by `ChannelManager`, keeping business hooks channel-agnostic.
+- Telegram supports native draft-style progress updates through the `text_draft` progress surface.
 
 ## Plugin Extensibility
 

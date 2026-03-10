@@ -37,6 +37,8 @@ BUB_TELEGRAM_PROXY=http://127.0.0.1:7890
 - Outbound is sent back to Telegram chat via bot API.
 - Empty outbound text is ignored.
 - If outbound content is JSON, the `"message"` field is used when present.
+- Telegram draft progress is available through the native `set_draft` action and maps to `sendMessageDraft`.
+- Draft progress currently depends on Telegram's draft support for bots with forum topic mode enabled; unsupported chats fall back to `typing`.
 
 ## Access Control
 
