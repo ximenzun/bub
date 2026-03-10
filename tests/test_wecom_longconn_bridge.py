@@ -111,6 +111,26 @@ async def test_node_wecom_longconn_bridge_translates_passive_image_reply() -> No
 
 
 @pytest.mark.asyncio
+async def test_node_wecom_longconn_bridge_translates_passive_text_reply_to_reply_stream() -> None:
+    request_id = "req-1"
+
+    record = await _translate_action(
+        OutboundAction(
+            kind="reply_message",
+            conversation=ConversationRef(platform="wecom", route_channel="wecom_longconn_bot", chat_id="chat-1"),
+            text="hello",
+            reply_grant=ReplyGrant(mode="token", token=request_id),
+        )
+    )
+
+    request = record["request"]
+    assert request["op"] == "replyStream"
+    assert request["args"][0] == {"headers": {"req_id": request_id}}
+    assert isinstance(request["args"][1], str)
+    assert request["args"][2:] == ["hello", True]
+
+
+@pytest.mark.asyncio
 async def test_node_wecom_longconn_bridge_translates_update_card_from_native_fields() -> None:
     card = {"card_type": "text_notice", "main_title": {"title": "updated"}}
     request_id = "req-1"
