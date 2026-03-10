@@ -5,6 +5,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from telegram.error import TelegramError
 
 from bub.channels.cli import CliChannel
 from bub.channels.handler import BufferedMessageHandler
@@ -13,7 +14,7 @@ from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel
 from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
 from bub.channels.wecom_webhook import WeComWebhookChannel
-from bub.social import ConversationRef, OutboundAction, ReplyGrant
+from bub.social import ConversationRef, LiveSurfaceRef, OutboundAction, ReplyGrant
 
 
 class FakeChannel:
@@ -385,6 +386,10 @@ async def test_telegram_channel_build_message_wraps_payload_and_disables_outboun
 @pytest.mark.asyncio
 async def test_telegram_channel_send_supports_reply_and_edit_actions() -> None:
     channel = TelegramChannel(lambda message: None)
+    assert channel.capabilities.supported_actions == frozenset(
+        {"send_message", "reply_message", "edit_message", "set_draft", "presence"}
+    )
+    assert channel.capabilities.progress_surfaces == frozenset({"presence", "text_draft"})
     events: list[tuple[str, dict[str, object]]] = []
 
     async def send_message(**kwargs) -> None:
@@ -393,7 +398,16 @@ async def test_telegram_channel_send_supports_reply_and_edit_actions() -> None:
     async def edit_message_text(**kwargs) -> None:
         events.append(("edit", kwargs))
 
-    channel._app = SimpleNamespace(bot=SimpleNamespace(send_message=send_message, edit_message_text=edit_message_text))
+    async def send_message_draft(**kwargs) -> None:
+        events.append(("draft", kwargs))
+
+    channel._app = SimpleNamespace(
+        bot=SimpleNamespace(
+            send_message=send_message,
+            edit_message_text=edit_message_text,
+            send_message_draft=send_message_draft,
+        )
+    )
 
     await channel.send(
         OutboundAction(
@@ -418,12 +432,48 @@ async def test_telegram_channel_send_supports_reply_and_edit_actions() -> None:
             conversation=ConversationRef(platform="telegram", chat_id="42", surface="direct"),
         )
     )
+    await channel.send(
+        OutboundAction(
+            kind="set_draft",
+            text="drafting",
+            conversation=ConversationRef(platform="telegram", chat_id="42", surface="direct", thread_id="7"),
+            live_surface=LiveSurfaceRef(mode="text_draft", surface_id="99"),
+        )
+    )
 
     assert events == [
         ("send", {"chat_id": "42", "text": "ignored"}),
         ("send", {"chat_id": "42", "text": "hello", "reply_to_message_id": 5}),
         ("edit", {"chat_id": "42", "message_id": 9, "text": "updated"}),
+        ("draft", {"chat_id": "42", "draft_id": 99, "text": "drafting", "message_thread_id": 7}),
     ]
+
+
+@pytest.mark.asyncio
+async def test_telegram_channel_set_draft_falls_back_to_presence_on_telegram_error() -> None:
+    channel = TelegramChannel(lambda message: None)
+    events: list[tuple[str, dict[str, object]]] = []
+
+    async def send_message_draft(**kwargs) -> None:
+        raise TelegramError("drafts unavailable")
+
+    async def send_chat_action(**kwargs) -> None:
+        events.append(("presence", kwargs))
+
+    channel._app = SimpleNamespace(
+        bot=SimpleNamespace(send_message_draft=send_message_draft, send_chat_action=send_chat_action)
+    )
+
+    await channel.send(
+        OutboundAction(
+            kind="set_draft",
+            text="drafting",
+            conversation=ConversationRef(platform="telegram", chat_id="42", surface="direct"),
+            live_surface=LiveSurfaceRef(mode="text_draft", surface_id="99"),
+        )
+    )
+
+    assert events == [("presence", {"chat_id": "42", "action": "typing"})]
 
 
 @pytest.mark.asyncio
