@@ -114,6 +114,42 @@ function replyContextOf(action) {
   };
 }
 
+function firstNonEmptyString(...values) {
+  for (const value of values) {
+    if (typeof value === "string" && value.trim()) {
+      return value;
+    }
+  }
+  return null;
+}
+
+function resolveChatTarget(body, state) {
+  const senderUserId = firstNonEmptyString(
+    body.from?.userid,
+    body.userid,
+    body.from_userid,
+    body.external_userid,
+    body.externalUserid,
+    body.sender_userid,
+  );
+  const candidates = [
+    ["chatid", body.chatid],
+    ["from.userid", body.from?.userid],
+    ["userid", body.userid],
+    ["from_userid", body.from_userid],
+    ["external_userid", body.external_userid],
+    ["externalUserid", body.externalUserid],
+    ["sender_userid", body.sender_userid],
+  ];
+  for (const [source, value] of candidates) {
+    const text = firstNonEmptyString(value);
+    if (text) {
+      return { chatId: text, source, senderUserId };
+    }
+  }
+  return { chatId: state.chatId, source: "state.chatId", senderUserId };
+}
+
 function streamIdOf(action) {
   return action.live_surface?.surface_id || `stream_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
 }
@@ -290,10 +326,20 @@ async function parseIncomingFrame(frame, wsClient, state) {
   const body = frame.body || {};
   const headers = frame.headers || {};
   const reqId = headers.req_id;
+  const target = resolveChatTarget(body, state);
+
+  if (target.source === "state.chatId") {
+    emit(buildLog("incoming frame missing chat target, using state default", "warning", {
+      msgtype: body.msgtype || frame.cmd || "unknown",
+      bodyKeys: Object.keys(body),
+      senderUserId: target.senderUserId,
+      fallbackChatId: state.chatId,
+    }));
+  }
 
   if (frame.cmd === "aibot_event_callback" || body.msgtype === "event") {
     const eventType = body.event?.eventtype || "event";
-    const chatId = body.chatid || body.from?.userid || state.chatId;
+    const chatId = target.chatId;
     const sessionId = `${state.channel}:${chatId}`;
     emit({
       type: "message",
@@ -312,9 +358,13 @@ async function parseIncomingFrame(frame, wsClient, state) {
           transport: "long_connection",
           chat_id: chatId,
           surface: body.chattype === "group" ? "group" : "direct",
+          metadata: {
+            wecom_chat_id_source: target.source,
+            wecom_sender_userid: target.senderUserId,
+          },
         },
         sender: {
-          id: body.from?.userid || "unknown",
+          id: target.senderUserId || "unknown",
           id_kind: "wecom_userid",
         },
         reply_grant: {
@@ -327,13 +377,15 @@ async function parseIncomingFrame(frame, wsClient, state) {
         },
         metadata: {
           wecom_raw_msgtype: "event",
+          wecom_chat_id_source: target.source,
+          wecom_sender_userid: target.senderUserId,
         },
       },
     });
     return;
   }
 
-  const chatId = body.chatid || body.from?.userid || state.chatId;
+  const chatId = target.chatId;
   const sessionId = `${state.channel}:${chatId}`;
   const textParts = [];
   const attachments = [];
@@ -387,9 +439,13 @@ async function parseIncomingFrame(frame, wsClient, state) {
         transport: "long_connection",
         chat_id: chatId,
         surface: body.chattype === "group" ? "group" : "direct",
+        metadata: {
+          wecom_chat_id_source: target.source,
+          wecom_sender_userid: target.senderUserId,
+        },
       },
       sender: {
-        id: body.from?.userid || "unknown",
+        id: target.senderUserId || "unknown",
         id_kind: "wecom_userid",
       },
       reply_grant: {
@@ -404,6 +460,8 @@ async function parseIncomingFrame(frame, wsClient, state) {
       attachments,
       metadata: {
         wecom_raw_msgtype: body.msgtype || null,
+        wecom_chat_id_source: target.source,
+        wecom_sender_userid: target.senderUserId,
       },
     },
   });
@@ -564,6 +622,15 @@ async function mainAsync() {
             } catch (fallbackError) {
               emit(buildLog("proactive fallback failed", "error", { error: renderError(fallbackError), op: request.fallback.op }));
             }
+          }
+          if (isReplyAckError(error, 600039)) {
+            const fallbackChatId = request.fallback?.args?.[0] || action.conversation?.chat_id || null;
+            emit(buildLog("wecom outbound rejected for current session/device", "error", {
+              chatId: fallbackChatId,
+              routeChannel: action.conversation?.route_channel || null,
+              actionKind: action.kind || null,
+              contentType: action.content_type || null,
+            }));
           }
           emit(buildLog("failed to send action", "error", { error: renderError(error), op: request.op }));
         }
