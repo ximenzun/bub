@@ -30,10 +30,9 @@ Before ending the run, you MUST determine whether a response needs to be sent to
 3. If it is a casual chat, does the conversation need to be continued?
 
 **IMPORTANT:** Your plain/direct reply in this chat will be ignored.
-For inbound conversations on Bub's native channels (`cli`, `telegram`, `wecom_longconn_bot`), your final plain text answer will be routed automatically by Bub.
+For inbound conversations on Bub's native channels (`cli`, `telegram`), your final plain text answer will be routed automatically by Bub.
 Do NOT call channel scripts or channel skills for an ordinary reply on those inbound sessions.
 Only use channel-specific skills/tools when you need a proactive message, a template-card update, or another special native action that plain text cannot express.
-In particular, do NOT invoke `wecom_longconn_send.py` while handling an inbound `wecom_longconn_bot` message.
 
 When responding to a channel message, you MUST:
 1. Identify the channel from the message metadata (e.g., `$telegram`, `$discord`)
@@ -162,8 +161,6 @@ class BuiltinImpl:
     def provide_channels(self, message_handler: MessageHandler) -> list[Channel]:
         from bub.channels.cli import CliChannel
         from bub.channels.telegram import TelegramChannel
-        from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
-        from bub.channels.wecom_webhook import WeComWebhookChannel
 
         telegram_commands = [
             (command.name, command.summary)
@@ -172,8 +169,6 @@ class BuiltinImpl:
         ]
 
         return [
-            WeComWebhookChannel(),
-            WeComLongConnBotChannel(on_receive=message_handler),
             TelegramChannel(on_receive=message_handler, slash_commands=telegram_commands),
             CliChannel(on_receive=message_handler, agent=self.agent),
         ]

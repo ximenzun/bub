@@ -1,8 +1,0 @@
-{
-  "name": "bub-wecom-bridge-runtime",
-  "private": true,
-  "type": "module",
-  "dependencies": {
-    "@wecom/aibot-node-sdk": "1.0.1"
-  }
-}

@@ -283,7 +283,7 @@ async def test_builtin_bash_returns_guidance_for_nested_wecom_longconn_send_for_
     from bub.builtin import tools as builtin_tools
 
     result = await cast(Tool, builtin_tools.bash).run(
-        cmd="uv run src/bub_skills/wecom/scripts/wecom_longconn_send.py --chat-id test",
+        cmd="uv run wecom_longconn_send.py --chat-id test",
         timeout_seconds=1,
         context=ToolContext(
             tape="t",
