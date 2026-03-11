@@ -8,6 +8,7 @@ from loguru import logger
 from pydantic import BaseModel
 from republic import Tool, ToolContext
 
+from bub.commands import SlashCommandSpec
 from bub.tools import REGISTRY, model_tools, render_tools_prompt, tool
 
 
@@ -111,6 +112,36 @@ def test_render_tools_prompt_renders_available_tools_block() -> None:
 
 def test_render_tools_prompt_returns_empty_string_for_empty_input() -> None:
     assert render_tools_prompt([]) == ""
+
+
+@pytest.mark.asyncio
+async def test_commands_tool_returns_slash_command_help() -> None:
+    from bub.builtin import tools as builtin_tools
+
+    class Framework:
+        def get_slash_commands(self):
+
+            return [
+                SlashCommandSpec(
+                    name="/repo",
+                    summary="Repo management commands.",
+                    usage=("/repo list", "/repo status"),
+                    examples=("/repo bind demo",),
+                )
+            ]
+
+    result = await cast(Tool, builtin_tools.show_commands).run(
+        topic="repo",
+        context=ToolContext(
+            tape="t",
+            run_id="r",
+            state={"_runtime_agent": type("AgentStub", (), {"framework": Framework()})()},
+        ),
+    )
+
+    assert "/repo: Repo management commands." in result
+    assert "/repo list" in result
+    assert "/repo status" in result
 
 
 def test_subprocess_env_prepends_rg_directory(monkeypatch: pytest.MonkeyPatch) -> None:

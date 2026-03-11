@@ -1,3 +1,4 @@
+import shlex
 import sys
 from pathlib import Path
 from typing import cast
@@ -10,6 +11,7 @@ from bub.builtin.agent import Agent
 from bub.builtin.model_backend import RepublicModelBackend
 from bub.channels.base import Channel
 from bub.channels.message import ChannelMessage
+from bub.commands import SlashCommandSpec
 from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
@@ -93,6 +95,9 @@ class BuiltinImpl:
     @hookimpl
     def build_prompt(self, message: ChannelMessage, session_id: str, state: State) -> PromptInput:
         content = content_of(message)
+        if translated := _translate_registered_slash_command(content, self.framework.get_slash_commands()):
+            message.kind = "command"
+            return translated
         if content.startswith(","):
             message.kind = "command"
             return content
@@ -120,6 +125,24 @@ class BuiltinImpl:
         app.command("chat")(cli.chat)
         app.command("hooks", hidden=True)(cli.list_hooks)
         app.command("message", hidden=True)(app.command("gateway")(cli.gateway))
+
+    @hookimpl
+    def provide_slash_commands(self) -> list[SlashCommandSpec]:
+        return [
+            SlashCommandSpec(
+                name="/commands",
+                summary="Show available chat commands.",
+                usage=("/commands", "/commands <topic>"),
+                examples=("/commands repo", "/commands git"),
+            ),
+            SlashCommandSpec(
+                name="/help",
+                summary="Alias for /commands.",
+                usage=("/help", "/help <topic>"),
+                examples=("/help repo",),
+                topic="help",
+            ),
+        ]
 
     def _read_agents_file(self, state: State) -> str:
         workspace = state.get("_runtime_workspace", str(Path.cwd()))
@@ -265,6 +288,28 @@ def _string_or_none(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _translate_registered_slash_command(content: str, commands: list[SlashCommandSpec]) -> str | None:
+    stripped = content.strip()
+    if not stripped.startswith("/"):
+        return None
+    try:
+        tokens = shlex.split(stripped)
+    except ValueError:
+        return None
+    if not tokens:
+        return None
+
+    root = tokens[0].casefold()
+    command_names = {command.name.casefold() for command in commands}
+    if root in {"/commands", "/help"}:
+        if len(tokens) == 2:
+            return f",commands topic={tokens[1]}"
+        return ",commands"
+    if root in command_names and (len(tokens) == 1 or (len(tokens) == 2 and tokens[1].casefold() == "help")):
+        return f",commands topic={root.lstrip('/')}"
+    return None
 
 
 def _attachment_prompt_parts(raw_attachments: object) -> list[dict[str, object]]:

@@ -7,6 +7,7 @@ import typer
 from typer.testing import CliRunner
 
 from bub.channels.base import Channel
+from bub.commands import SlashCommandSpec
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
 from bub.social import ConversationRef, OutboundAction
@@ -116,6 +117,30 @@ def test_get_model_backend_prefers_high_priority_plugin() -> None:
     framework._plugin_manager.register(HighPriorityPlugin(), name="high")
 
     assert framework.get_model_backend() is high_backend
+
+
+def test_get_slash_commands_prefers_high_priority_plugin_for_duplicate_names() -> None:
+    framework = BubFramework()
+    low = SlashCommandSpec(name="/repo", summary="low")
+    high = SlashCommandSpec(name="/repo", summary="high")
+    git = SlashCommandSpec(name="/git", summary="git")
+
+    class LowPriorityPlugin:
+        @hookimpl
+        def provide_slash_commands(self):
+            return [low]
+
+    class HighPriorityPlugin:
+        @hookimpl
+        def provide_slash_commands(self):
+            return [high, git]
+
+    framework._plugin_manager.register(LowPriorityPlugin(), name="low")
+    framework._plugin_manager.register(HighPriorityPlugin(), name="high")
+
+    commands = framework.get_slash_commands()
+
+    assert commands == [git, high]
 
 
 def test_builtin_cli_exposes_gateway_and_keeps_message_hidden_alias() -> None:
