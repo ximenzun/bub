@@ -125,6 +125,23 @@ def test_subprocess_env_prepends_rg_directory(monkeypatch: pytest.MonkeyPatch) -
     assert env["PATH"] == os.pathsep.join([str(rg_binary.parent), "/usr/bin", "/bin"])
 
 
+@pytest.mark.parametrize(
+    ("cmd", "expected"),
+    [
+        ('rg -n "needle" src', True),
+        ("grep -R needle src", True),
+        ("git grep needle", True),
+        ("python script.py", False),
+    ],
+)
+def test_is_search_no_match_recognizes_search_commands(cmd: str, expected: bool) -> None:
+    from bub.builtin import tools as builtin_tools
+
+    assert builtin_tools._is_search_no_match(cmd, 1, "") is expected
+    assert builtin_tools._is_search_no_match(cmd, 2, "") is False
+    assert builtin_tools._is_search_no_match(cmd, 1, "boom") is False
+
+
 @pytest.mark.asyncio
 async def test_builtin_bash_cleans_up_subprocess_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     from bub.builtin import tools as builtin_tools
@@ -166,3 +183,28 @@ async def test_builtin_bash_cleans_up_subprocess_on_timeout(monkeypatch: pytest.
     assert len(calls) == 1
     assert calls[0][1] == 1.0
     assert calls[0][2] is (builtin_tools.sys.platform != "win32")
+
+
+@pytest.mark.asyncio
+async def test_builtin_bash_returns_no_matches_for_rg_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
+    from bub.builtin import tools as builtin_tools
+
+    class FakeProcess:
+        returncode = 1
+
+        async def communicate(self):
+            return b"", b""
+
+    async def fake_create_subprocess_shell(*args, **kwargs):
+        return FakeProcess()
+
+    monkeypatch.setattr(builtin_tools.asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
+    monkeypatch.setattr(builtin_tools, "_subprocess_env", lambda: {})
+
+    result = await cast(Tool, builtin_tools.bash).run(
+        cmd='rg -n "missing" src',
+        timeout_seconds=1,
+        context=ToolContext(tape="t", run_id="r", state={"_runtime_workspace": "/tmp"}),  # noqa: S108
+    )
+
+    assert result == "(no matches)"

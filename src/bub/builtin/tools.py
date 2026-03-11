@@ -2,10 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
 import sys
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field
@@ -100,6 +101,21 @@ def _subprocess_env() -> dict[str, str]:
     return env
 
 
+def _is_search_no_match(cmd: str, returncode: int, stderr_text: str) -> bool:
+    if returncode != 1 or stderr_text:
+        return False
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    executable = PurePath(argv[0]).name
+    if executable in {"rg", "grep"}:
+        return True
+    return len(argv) > 1 and executable == "git" and argv[1] == "grep"
+
+
 @tool(context=True)
 async def bash(
     cmd: str, cwd: str | None = None, timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS, *, context: ToolContext
@@ -130,6 +146,8 @@ async def bash(
         raise TimeoutError(f"command timed out after {timeout_seconds}s: {cmd}") from exc
     stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace").strip()
     stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
+    if _is_search_no_match(cmd, completed.returncode or 0, stderr_text):
+        return "(no matches)"
     if completed.returncode != 0:
         message = stderr_text or stdout_text or f"exit={completed.returncode}"
         raise RuntimeError(f"exit={completed.returncode}: {message}")
