@@ -198,6 +198,18 @@ wheels = [
 ]
 
 [[package]]
+name = "authlib"
+version = "1.6.9"
+source = { registry = "https://pypi.org/simple" }
+dependencies = [
+    { name = "cryptography" },
+]
+sdist = { url = "https://files.pythonhosted.org/packages/af/98/00d3dd826d46959ad8e32af2dbb2398868fd9fd0683c26e56d0789bd0e68/authlib-1.6.9.tar.gz", hash = "sha256:d8f2421e7e5980cc1ddb4e32d3f5fa659cfaf60d8eaf3281ebed192e4ab74f04", size = 165134, upload-time = "2026-03-02T07:44:01.998Z" }
+wheels = [
+    { url = "https://files.pythonhosted.org/packages/53/23/b65f568ed0c22f1efacb744d2db1a33c8068f384b8c9b482b52ebdbc3ef6/authlib-1.6.9-py2.py3-none-any.whl", hash = "sha256:f08b4c14e08f0861dc18a32357b33fbcfd2ea86cfe3fe149484b4d764c4a0ac3", size = 244197, upload-time = "2026-03-02T07:44:00.307Z" },
+]
+
+[[package]]
 name = "bub"
 version = "0.3.0a1"
 source = { editable = "." }
@@ -235,7 +247,7 @@ dev = [
 [package.metadata]
 requires-dist = [
     { name = "aiohttp", specifier = ">=3.13.3" },
-    { name = "any-llm-sdk", extras = ["anthropic", "gemini"] },
+    { name = "any-llm-sdk", extras = ["anthropic", "gemini"], specifier = ">=1.9.0" },
     { name = "loguru", specifier = ">=0.7.2" },
     { name = "pluggy", specifier = ">=1.6.0" },
     { name = "prompt-toolkit", specifier = ">=3.0.0" },
@@ -244,7 +256,7 @@ requires-dist = [
     { name = "python-telegram-bot", specifier = ">=22.6" },
     { name = "pyyaml", specifier = ">=6.0.0" },
     { name = "rapidfuzz", specifier = ">=3.14.3" },
-    { name = "republic", specifier = ">=0.5.3" },
+    { name = "republic", specifier = ">=0.5.4" },
     { name = "rich", specifier = ">=13.0.0" },
     { name = "typer", specifier = ">=0.9.0" },
 ]
@@ -1760,15 +1772,17 @@ wheels = [
 
 [[package]]
 name = "republic"
-version = "0.5.3"
+version = "0.5.4"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
     { name = "any-llm-sdk" },
+    { name = "authlib" },
+    { name = "httpx" },
     { name = "pydantic" },
 ]
-sdist = { url = "https://files.pythonhosted.org/packages/6a/45/21c3cd167dad5e3d2434c9454a298d85b49fe0f4740f21f35ee50f4da89d/republic-0.5.3.tar.gz", hash = "sha256:31b43d41026a3d877c894c8bf06e3295929401a991f606d3d17ce1a63562c688", size = 100213, upload-time = "2026-03-05T10:52:22.704Z" }
+sdist = { url = "https://files.pythonhosted.org/packages/af/4c/f0d776d498f4ed6e92c2e26f6bd99e5b4395961cdbc567668e6cf67e96f5/republic-0.5.4.tar.gz", hash = "sha256:1a1870d75933d7c05d7abee09172c3b3c7473a5c65a52aaf25c161d034f440d9", size = 132388, upload-time = "2026-03-09T04:40:44.819Z" }
 wheels = [
-    { url = "https://files.pythonhosted.org/packages/06/eb/77769fbc7877b38ed98d17ec5ae174e3f0b0bdafa2f5be4ef054d49efe11/republic-0.5.3-py3-none-any.whl", hash = "sha256:82bb6654fcfbb22ebd9267b23bc22a7d5fe7dc46fe9fe1a56e46e26f5ce8bcf9", size = 39881, upload-time = "2026-03-05T10:52:23.606Z" },
+    { url = "https://files.pythonhosted.org/packages/e6/d1/e54222cb7916a6844df6edd5f054d143fb0c9cf2c0b0b4973d7f241c3ace/republic-0.5.4-py3-none-any.whl", hash = "sha256:04699f629dd023e411ffd0143c558f8ba695c8831c705eff647f81e8c5a8f38a", size = 57941, upload-time = "2026-03-09T04:40:47.08Z" },
 ]
 
 [[package]]

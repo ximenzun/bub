@@ -14,13 +14,13 @@ from functools import cached_property
 from pathlib import Path
 from typing import Any
 
-from any_llm import AnyLLM
 from loguru import logger
-from republic import LLM, AsyncTapeStore, ToolAutoResult, ToolContext
+from republic import AsyncTapeStore, ToolAutoResult, ToolContext
 from republic.tape import InMemoryTapeStore, Tape
 
 from bub.builtin.context import default_tape_context
-from bub.builtin.settings import AgentSettings, ApiMode
+from bub.builtin.model_backend import RepublicModelBackend
+from bub.builtin.settings import AgentSettings
 from bub.builtin.store import ForkTapeStore
 from bub.builtin.tape import TapeService
 from bub.framework import BubFramework
@@ -47,7 +47,7 @@ class Agent:
         if tape_store is None:
             tape_store = InMemoryTapeStore()
         tape_store = ForkTapeStore(tape_store)
-        llm = _build_llm(self.settings, tape_store)
+        llm = _build_llm(self.settings, tape_store, backend=self.framework.get_model_backend())
         return TapeService(llm, self.settings.home / "tapes", tape_store)
 
     async def run(
@@ -294,69 +294,14 @@ def _resolve_tool_auto_result(output: ToolAutoResult) -> _ToolAutoOutcome:
     return _ToolAutoOutcome(kind="error", error=f"{error_kind}: {output.error.message}")
 
 
-def _build_llm(settings: AgentSettings, tape_store: AsyncTapeStore) -> LLM:
-    _validate_api_mode(settings)
-    return LLM(
-        settings.model,
-        api_key=settings.api_key,
-        api_base=settings.api_base,
-        use_responses=_use_responses(settings.api_mode),
-        tape_store=tape_store,
-        context=default_tape_context(),
-    )
+def _build_llm(settings: AgentSettings, tape_store: AsyncTapeStore, *, backend: Any = None) -> Any:
+    if backend is None:
+        backend = RepublicModelBackend()
+    return backend.build_llm(settings=settings, tape_store=tape_store, context=default_tape_context())
 
 
 def _load_runtime_settings() -> AgentSettings:
     return AgentSettings()
-
-
-def _use_responses(api_mode: ApiMode) -> bool:
-    return api_mode in {"auto", "responses"}
-
-
-def _validate_api_mode(settings: AgentSettings) -> None:
-    if settings.api_mode in {"auto", "chat"}:
-        return
-    provider = _provider_from_model(settings.model)
-    if settings.api_mode == "responses" and _provider_supports_responses(provider):
-        return
-    if settings.api_mode == "anthropic" and provider in {"anthropic", "vertexaianthropic"}:
-        return
-    if settings.api_mode == "gemini" and provider == "gemini":
-        return
-    raise RuntimeError(_api_mode_error(settings.api_mode, provider))
-
-
-def _provider_from_model(model: str) -> str:
-    provider, _sep, _rest = model.partition(":")
-    return provider if provider else model
-
-
-def _provider_supports_responses(provider: str) -> bool:
-    try:
-        provider_class = AnyLLM.get_provider_class(provider)
-    except Exception:
-        return False
-    return bool(getattr(provider_class, "SUPPORTS_RESPONSES", False))
-
-
-def _api_mode_error(api_mode: ApiMode, provider: str) -> str:
-    if api_mode == "responses":
-        return (
-            f"api_mode='responses' is not supported for provider '{provider}'. "
-            "Use BUB_API_MODE=auto or BUB_API_MODE=chat instead."
-        )
-    if api_mode == "anthropic":
-        return (
-            f"api_mode='anthropic' requires an Anthropic-compatible provider, got '{provider}'. "
-            "Use model prefix 'anthropic:' or switch BUB_API_MODE=chat."
-        )
-    if api_mode == "gemini":
-        return (
-            f"api_mode='gemini' requires the Gemini provider, got '{provider}'. "
-            "Use model prefix 'gemini:' or switch BUB_API_MODE=chat."
-        )
-    return f"api_mode='{api_mode}' is not supported for provider '{provider}'."
 
 
 @dataclass(frozen=True)

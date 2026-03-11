@@ -14,6 +14,7 @@ from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, PromptI
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
+    from bub.model_backend import ModelBackend
 
 BUB_HOOK_NAMESPACE = "bub"
 hookspec = pluggy.HookspecMarker(BUB_HOOK_NAMESPACE)
@@ -85,6 +86,11 @@ class BubHookSpecs:
     @hookspec(firstresult=True)
     def provide_tape_store(self) -> TapeStore | AsyncTapeStore:
         """Provide a tape store instance for Bub's conversation recording feature."""
+        ...
+
+    @hookspec(firstresult=True)
+    def provide_model_backend(self) -> ModelBackend:
+        """Provide the model backend used to build Bub's runtime LLM client."""
         ...
 
     @hookspec

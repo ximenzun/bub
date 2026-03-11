@@ -7,6 +7,7 @@ from loguru import logger
 from republic.tape import TapeStore
 
 from bub.builtin.agent import Agent
+from bub.builtin.model_backend import RepublicModelBackend
 from bub.channels.base import Channel
 from bub.channels.message import ChannelMessage
 from bub.envelope import content_of, field_of
@@ -47,6 +48,7 @@ class BuiltinImpl:
         from bub.builtin import tools  # noqa: F401
 
         self.framework = framework
+        self.model_backend = RepublicModelBackend()
         self.agent = Agent(framework)
 
     @hookimpl
@@ -197,6 +199,10 @@ class BuiltinImpl:
         from bub.builtin.store import FileTapeStore
 
         return FileTapeStore(directory=self.agent.settings.home / "tapes")
+
+    @hookimpl
+    def provide_model_backend(self) -> RepublicModelBackend:
+        return self.model_backend
 
     @staticmethod
     def _conversation_for(message: Envelope) -> ConversationRef:
