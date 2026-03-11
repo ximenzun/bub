@@ -13,6 +13,7 @@ from rapidfuzz import fuzz, process
 from republic import LLM, Tape, TapeEntry
 
 from bub.builtin.store import ForkTapeStore
+from bub.utils import get_entry_text
 
 WORD_PATTERN = re.compile(r"[a-z0-9_/-]+")
 MIN_FUZZY_QUERY_LENGTH = 3
@@ -116,27 +117,38 @@ class TapeService:
         entries = await tape.handoff_async(name, state=state)
         return cast(list[TapeEntry], entries)
 
-    async def search(self, tape_name: str, query: str, *, limit: int = 20) -> list[TapeEntry]:
+    async def search(
+        self,
+        tape_name: str,
+        query: str,
+        *,
+        limit: int = 20,
+        start: str | None = None,
+        end: str | None = None,
+        kinds: tuple[str, ...] = ("message", "tool_result"),
+    ) -> list[TapeEntry]:
         normalized_query = query.strip().lower()
         if not normalized_query:
             return []
         results: list[TapeEntry] = []
         tapes = [self._llm.tape(tape_name)]
         seen: set[str] = set()
+        start_dt = _parse_datetime_bound(start, is_end=False)
+        end_dt = _parse_datetime_bound(end, is_end=True)
 
         for tape in tapes:
             count = 0
-            for entry in reversed(list(await tape.query_async.kinds("message").all())):
-                payload_text = json.dumps(entry.payload, ensure_ascii=False)
-                if payload_text.lower() in seen:
+            for entry in reversed(list(await tape.query_async.all())):
+                if kinds and entry.kind not in kinds:
                     continue
-                seen.add(payload_text.lower())
-                entry_meta = getattr(entry, "meta", {})
-                meta_text = json.dumps(entry_meta, ensure_ascii=False)
+                if not _entry_matches_date_range(entry, start_dt=start_dt, end_dt=end_dt):
+                    continue
+                payload_text = get_entry_text(entry).lower()
+                if payload_text in seen:
+                    continue
+                seen.add(payload_text)
 
-                if (
-                    normalized_query in payload_text.lower() or normalized_query in meta_text.lower()
-                ) or self._is_fuzzy_match(normalized_query, payload_text, meta_text):
+                if normalized_query in payload_text or self._is_fuzzy_match(normalized_query, payload_text):
                     results.append(entry)
                     count += 1
                     if count >= limit:
@@ -144,7 +156,7 @@ class TapeService:
         return results
 
     @staticmethod
-    def _is_fuzzy_match(normalized_query: str, payload_text: str, meta_text: str) -> bool:
+    def _is_fuzzy_match(normalized_query: str, payload_text: str) -> bool:
         if len(normalized_query) < MIN_FUZZY_QUERY_LENGTH:
             return False
 
@@ -154,7 +166,7 @@ class TapeService:
         query_phrase = " ".join(query_tokens)
         window_size = len(query_tokens)
 
-        source_tokens = WORD_PATTERN.findall(payload_text.lower()) + WORD_PATTERN.findall(meta_text.lower())
+        source_tokens = WORD_PATTERN.findall(payload_text)
         if not source_tokens:
             return False
 
@@ -181,7 +193,7 @@ class TapeService:
 
     async def append_event(self, tape_name: str, name: str, payload: dict[str, Any], **meta: Any) -> None:
         tape = self._llm.tape(tape_name)
-        await tape.append_async(TapeEntry.event(name=name, payload=payload, **meta))
+        await tape.append_async(TapeEntry.event(name=name, data=payload, **meta))
 
     def session_tape(self, session_id: str, workspace: Path) -> Tape:
         workspace_hash = hashlib.md5(str(workspace.resolve()).encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
@@ -191,6 +203,33 @@ class TapeService:
         return self._llm.tape(tape_name)
 
     @contextlib.asynccontextmanager
-    async def fork_tape(self, tape_name: str) -> AsyncGenerator[None, None]:
-        async with self._store.fork(tape_name):
+    async def fork_tape(self, tape_name: str, merge_back: bool = True) -> AsyncGenerator[None, None]:
+        async with self._store.fork(tape_name, merge_back=merge_back):
             yield
+
+
+def _entry_matches_date_range(
+    entry: TapeEntry,
+    *,
+    start_dt: datetime | None,
+    end_dt: datetime | None,
+) -> bool:
+    if start_dt is None and end_dt is None:
+        return True
+    entry_dt = datetime.fromisoformat(entry.date)
+    if entry_dt.tzinfo is None:
+        entry_dt = entry_dt.replace(tzinfo=UTC)
+    if start_dt is not None and entry_dt < start_dt:
+        return False
+    return not (end_dt is not None and entry_dt > end_dt)
+
+
+def _parse_datetime_bound(value: str | None, *, is_end: bool) -> datetime | None:
+    if value is None or not value.strip():
+        return None
+    parsed = datetime.fromisoformat(value.strip())
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=UTC)
+    if len(value.strip()) == 10 and is_end:
+        parsed = parsed.replace(hour=23, minute=59, second=59, microsecond=999999)
+    return parsed

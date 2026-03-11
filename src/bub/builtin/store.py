@@ -10,7 +10,7 @@ from collections.abc import AsyncGenerator, Iterable
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import cast
+from typing import Any, cast
 
 from loguru import logger
 from republic import AsyncTapeStore, TapeEntry, TapeQuery
@@ -59,19 +59,20 @@ class ForkTapeStore:
         self._current.append(tape, entry)
 
     @contextlib.asynccontextmanager
-    async def fork(self, tape: str) -> AsyncGenerator[None, None]:
+    async def fork(self, tape: str, merge_back: bool = True) -> AsyncGenerator[None, None]:
         store = InMemoryTapeStore()
         token = current_store.set(store)
         try:
             yield
         finally:
             current_store.reset(token)
-            entries = store.read(tape)
-            if entries:
-                count = len(entries)
-                for entry in entries:
-                    await self._parent.append(tape, entry)
-                logger.info(f'Merged {count} entries into tape "{tape}"')
+            if merge_back:
+                entries = store.read(tape)
+                if entries:
+                    count = len(entries)
+                    for entry in entries:
+                        await self._parent.append(tape, entry)
+                    logger.info(f'Merged {count} entries into tape "{tape}"')
 
 
 class EmptyTapeStore:
@@ -119,10 +120,28 @@ class FileTapeStore(InMemoryQueryMixin):
         self._tape_file(tape).reset()
 
     @staticmethod
-    def _redact_payload(payload: dict) -> None:
-        if "content" not in payload:
-            return
-        payload["content"] = re.sub(r'data:[^;]+;base64,[^"]+', "[media]", payload["content"])
+    def _redact_prompt(value: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        return [dict(part) for part in value if isinstance(part, dict) and part.get("type") == "text"]
+
+    @classmethod
+    def _redact_value(cls, value: object) -> object:
+        if isinstance(value, str):
+            return re.sub(r'data:[^;]+;base64,[^"]+', "[media]", value)
+        if isinstance(value, dict):
+            cloned = dict(value)
+            cls._redact_payload(cloned)
+            return cloned
+        if isinstance(value, list):
+            if value and all(isinstance(part, dict) and "type" in part for part in value):
+                return cls._redact_prompt(value)
+            return [cls._redact_value(item) for item in value]
+        return value
+
+    @classmethod
+    def _redact_payload(cls, payload: dict[str, Any]) -> None:
+        for key, value in list(payload.items()):
+            if key in {"content", "prompt", "data"}:
+                payload[key] = cls._redact_value(value)
 
     def append(self, tape: str, entry: TapeEntry) -> None:
         self._redact_payload(entry.payload)

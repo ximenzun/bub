@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, cast
 
 import pluggy
 import typer
@@ -17,6 +17,7 @@ from bub.envelope import content_of, field_of, unpack_batch
 from bub.hook_runtime import HookRuntime
 from bub.hookspecs import BUB_HOOK_NAMESPACE, BubHookSpecs
 from bub.social import ConversationRef, OutboundAction, ReplyGrant, normalize_surface
+from bub.social.types import ActionKind, ContentKind
 from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, OutboundChannelRouter, TurnResult
 
 if TYPE_CHECKING:
@@ -116,7 +117,7 @@ class BubFramework:
                         error=RuntimeError("no model stream returned output"),
                         message=inbound,
                     )
-                    model_output = prompt
+                    model_output = prompt if isinstance(prompt, str) else content_of(inbound)
                 else:
                     model_output, streamed_actions = await self._consume_model_stream(model_stream)
             finally:
@@ -201,7 +202,7 @@ class BubFramework:
         text_parts: list[str] = []
         streamed_actions: list[OutboundAction] = []
         if hasattr(model_stream, "__aiter__"):
-            async for event in model_stream:  # type: ignore[union-attr]
+            async for event in cast(ModelStream, model_stream):
                 await self._handle_model_event(event, text_parts, streamed_actions)
         else:
             for event in model_stream:
@@ -267,12 +268,13 @@ class BubFramework:
         reply_to_message_id = _string_or_none(field_of(message, "reply_to_message_id"))
         if reply_to_message_id is None and reply_grant is not None:
             reply_to_message_id = reply_grant.reply_to_message_id
-        kind = "reply_message" if reply_to_message_id else "send_message"
+        kind: ActionKind = "reply_message" if reply_to_message_id else "send_message"
+        content_type: ContentKind = cast(ContentKind, str(field_of(message, "content_type", "text")))
         return OutboundAction(
             kind=kind,
             conversation=conversation,
             text=model_output,
-            content_type=str(field_of(message, "content_type", "text")),
+            content_type=content_type,
             message_id=_string_or_none(field_of(message, "message_id")),
             reply_to_message_id=reply_to_message_id,
             reply_grant=reply_grant,

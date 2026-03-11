@@ -10,6 +10,8 @@ from bub.social import OutboundAction
 
 type Envelope = Any
 type State = dict[str, Any]
+type PromptPart = dict[str, Any]
+type PromptInput = str | list[PromptPart]
 type MessageHandler = Callable[[Envelope], Coroutine[Any, Any, None]]
 type OutboundDispatcher = Callable[[OutboundAction], Coroutine[Any, Any, bool]]
 type ModelEventKind = Literal["text_delta", "action"]
@@ -36,6 +38,6 @@ class TurnResult:
     """Result of one complete message turn."""
 
     session_id: str
-    prompt: str
+    prompt: PromptInput
     model_output: str
     outbound_actions: list[OutboundAction] = field(default_factory=list)
