@@ -165,10 +165,16 @@ class BuiltinImpl:
         from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
         from bub.channels.wecom_webhook import WeComWebhookChannel
 
+        telegram_commands = [
+            (command.name, command.summary)
+            for command in self.framework.get_slash_commands()
+            if command.name in {"/commands", "/help", "/repo", "/git"}
+        ]
+
         return [
             WeComWebhookChannel(),
             WeComLongConnBotChannel(on_receive=message_handler),
-            TelegramChannel(on_receive=message_handler),
+            TelegramChannel(on_receive=message_handler, slash_commands=telegram_commands),
             CliChannel(on_receive=message_handler, agent=self.agent),
         ]
 
