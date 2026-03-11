@@ -142,6 +142,43 @@ async def test_commands_tool_returns_slash_command_help() -> None:
     assert "/repo: Repo management commands." in result
     assert "/repo list" in result
     assert "/repo status" in result
+    assert "Send `/commands` to see all available commands." in result
+
+
+@pytest.mark.asyncio
+async def test_commands_tool_renders_index_with_usage_hint_and_examples() -> None:
+    from bub.builtin import tools as builtin_tools
+
+    class Framework:
+        def get_slash_commands(self):
+            return [
+                SlashCommandSpec(
+                    name="/commands",
+                    summary="Show available chat commands.",
+                    examples=("/commands repo",),
+                ),
+                SlashCommandSpec(
+                    name="/repo",
+                    summary="Repo management commands.",
+                    usage=("/repo", "/repo list"),
+                    examples=("/repo bind demo",),
+                ),
+            ]
+
+    result = await cast(Tool, builtin_tools.show_commands).run(
+        context=ToolContext(
+            tape="t",
+            run_id="r",
+            state={"_runtime_agent": type("AgentStub", (), {"framework": Framework()})()},
+        ),
+    )
+
+    assert "Available slash commands:" in result
+    assert "Use `/commands <topic>` or send `/<topic>`" in result
+    assert "- /commands: Show available chat commands." in result
+    assert "- /repo: Repo management commands." in result
+    assert "Quick examples:" in result
+    assert "/commands repo" in result
 
 
 def test_subprocess_env_prepends_rg_directory(monkeypatch: pytest.MonkeyPatch) -> None:

@@ -187,7 +187,11 @@ def test_system_prompt_ignores_missing_agents_file(tmp_path: Path) -> None:
 
 
 def test_provide_channels_returns_wecom_telegram_and_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
-    _, impl, agent = _build_impl(tmp_path)
+    framework, impl, agent = _build_impl(tmp_path)
+    framework.get_slash_commands = lambda: [  # type: ignore[method-assign]
+        SlashCommandSpec(name="/commands", summary="Show available chat commands."),
+        SlashCommandSpec(name="/help", summary="Alias for /commands.", topic="help"),
+    ]
 
     class DummyCliChannel:
         name = "cli"
@@ -199,8 +203,9 @@ def test_provide_channels_returns_wecom_telegram_and_cli(tmp_path: Path, monkeyp
     class DummyTelegramChannel:
         name = "telegram"
 
-        def __init__(self, on_receive) -> None:
+        def __init__(self, on_receive, *, slash_commands=None) -> None:
             self.on_receive = on_receive
+            self.slash_commands = slash_commands
 
     class DummyWeComWebhookChannel:
         name = "wecom_webhook"
@@ -232,6 +237,7 @@ def test_provide_channels_returns_wecom_telegram_and_cli(tmp_path: Path, monkeyp
     assert [channel.name for channel in channels] == ["wecom_webhook", "wecom_longconn_bot", "telegram", "cli"]
     assert channels[1].on_receive is message_handler
     assert channels[2].on_receive is message_handler
+    assert channels[2].slash_commands == [("/commands", "Show available chat commands."), ("/help", "Alias for /commands.")]
     assert channels[3].on_receive is message_handler
     assert channels[3].agent is agent
 

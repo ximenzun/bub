@@ -333,6 +333,51 @@ async def test_telegram_channel_send_extracts_json_message_and_skips_blank() -> 
 
 
 @pytest.mark.asyncio
+async def test_telegram_channel_start_registers_bot_commands(monkeypatch: pytest.MonkeyPatch) -> None:
+    channel = TelegramChannel(lambda message: None, slash_commands=[("/commands", "Show commands"), ("/repo", "Repo help")])
+    events: list[object] = []
+
+    class DummyUpdater:
+        async def start_polling(self, **kwargs) -> None:
+            events.append(("poll", kwargs))
+
+    class DummyApp:
+        def __init__(self) -> None:
+            self.bot = SimpleNamespace(set_my_commands=self.set_my_commands)
+            self.updater = DummyUpdater()
+
+        def add_handler(self, handler) -> None:
+            events.append(("handler", type(handler).__name__))
+
+        async def initialize(self) -> None:
+            events.append("initialize")
+
+        async def start(self) -> None:
+            events.append("start")
+
+        async def set_my_commands(self, commands) -> None:
+            events.append(("commands", commands))
+
+    class DummyBuilder:
+        def token(self, _token):
+            return self
+
+        def build(self):
+            return DummyApp()
+
+    monkeypatch.setattr("bub.channels.telegram.Application.builder", lambda: DummyBuilder())
+
+    await channel.start(asyncio.Event())
+
+    commands_event = next(item for item in events if isinstance(item, tuple) and item[0] == "commands")
+    commands = commands_event[1]
+    assert [(command.command, command.description) for command in commands] == [
+        ("commands", "Show commands"),
+        ("repo", "Repo help"),
+    ]
+
+
+@pytest.mark.asyncio
 async def test_telegram_channel_build_message_returns_command_directly() -> None:
     channel = TelegramChannel(lambda message: None)
     channel._parser = SimpleNamespace(parse=_async_return((",help", {"type": "text"})), get_reply=_async_return(None))

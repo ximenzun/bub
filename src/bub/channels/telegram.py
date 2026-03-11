@@ -11,7 +11,7 @@ from typing import Any, ClassVar
 from loguru import logger
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from telegram import Bot, Message, Update
+from telegram import Bot, BotCommand, Message, Update
 from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 from telegram.ext import MessageHandler as TelegramMessageHandler
@@ -132,13 +132,14 @@ class TelegramChannel(Channel):
     name = "telegram"
     _app: Application
 
-    def __init__(self, on_receive: MessageHandler) -> None:
+    def __init__(self, on_receive: MessageHandler, *, slash_commands: list[tuple[str, str]] | None = None) -> None:
         self._on_receive = on_receive
         self._settings = TelegramSettings()
         self._allow_users = {uid.strip() for uid in (self._settings.allow_users or "").split(",") if uid.strip()}
         self._allow_chats = {cid.strip() for cid in (self._settings.allow_chats or "").split(",") if cid.strip()}
         self._parser = TelegramMessageParser(bot_getter=lambda: self._app.bot)
         self._typing_tasks: dict[str, asyncio.Task] = {}
+        self._slash_commands = slash_commands or []
 
     @property
     def needs_debounce(self) -> bool:
@@ -179,6 +180,7 @@ class TelegramChannel(Channel):
         self._app.add_handler(TelegramMessageHandler(~filters.COMMAND, self._on_message, block=False))
         await self._app.initialize()
         await self._app.start()
+        await self._set_registered_commands()
         updater = self._app.updater
         if updater is None:
             return
@@ -198,6 +200,13 @@ class TelegramChannel(Channel):
                 await task
         self._typing_tasks.clear()
         logger.info("telegram.stopped")
+
+    async def _set_registered_commands(self) -> None:
+        commands = _telegram_bot_commands(self._slash_commands)
+        if not commands:
+            return
+        with contextlib.suppress(Exception):
+            await self._app.bot.set_my_commands(commands)
 
     async def send(self, action: OutboundAction) -> None:
         chat_id = action.conversation.chat_id if action.conversation is not None else "default"
@@ -583,3 +592,13 @@ class TelegramMessageParser:
             ),
         })
         return f"[Video note: {duration}s]", metadata
+
+
+def _telegram_bot_commands(slash_commands: list[tuple[str, str]]) -> list[BotCommand]:
+    commands: list[BotCommand] = []
+    for name, summary in slash_commands:
+        command = name.lstrip("/").strip()
+        if not command:
+            continue
+        commands.append(BotCommand(command=command, description=summary[:256]))
+    return commands
