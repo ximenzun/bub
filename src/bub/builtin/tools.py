@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import os
+import shlex
 import shutil
+import sys
 import uuid
-from pathlib import Path
+from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Literal, cast
 
 from pydantic import BaseModel, Field
@@ -12,6 +14,7 @@ from republic import ToolContext
 
 from bub.skills import discover_skills
 from bub.tools import tool
+from bub.utils import terminate_process
 
 if TYPE_CHECKING:
     from bub.builtin.agent import Agent
@@ -98,23 +101,53 @@ def _subprocess_env() -> dict[str, str]:
     return env
 
 
+def _is_search_no_match(cmd: str, returncode: int, stderr_text: str) -> bool:
+    if returncode != 1 or stderr_text:
+        return False
+    try:
+        argv = shlex.split(cmd)
+    except ValueError:
+        return False
+    if not argv:
+        return False
+    executable = PurePath(argv[0]).name
+    if executable in {"rg", "grep"}:
+        return True
+    return len(argv) > 1 and executable == "git" and argv[1] == "grep"
+
+
 @tool(context=True)
 async def bash(
     cmd: str, cwd: str | None = None, timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS, *, context: ToolContext
 ) -> str:
     """Run a shell command and return its output within a time limit. Raises if the command fails or times out."""
     workspace = context.state.get("_runtime_workspace")
+    process_kwargs: dict[str, Any] = {}
+    if sys.platform != "win32":
+        # Give the shell its own process group so a timeout can tear down all descendants.
+        process_kwargs["start_new_session"] = True
     completed = await asyncio.create_subprocess_shell(
         cmd,
         cwd=cwd or workspace,
         env=_subprocess_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **process_kwargs,
     )
-    async with asyncio.timeout(timeout_seconds):
-        stdout_bytes, stderr_bytes = await completed.communicate()
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            stdout_bytes, stderr_bytes = await completed.communicate()
+    except TimeoutError as exc:
+        await terminate_process(
+            completed,
+            timeout_seconds=min(float(timeout_seconds), 5.0),
+            kill_process_group=sys.platform != "win32",
+        )
+        raise TimeoutError(f"command timed out after {timeout_seconds}s: {cmd}") from exc
     stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace").strip()
     stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
+    if _is_search_no_match(cmd, completed.returncode or 0, stderr_text):
+        return "(no matches)"
     if completed.returncode != 0:
         message = stderr_text or stdout_text or f"exit={completed.returncode}"
         raise RuntimeError(f"exit={completed.returncode}: {message}")

@@ -16,6 +16,8 @@ from bub.channels.wecom_longconn_bot import WeComLongConnBotChannel
 from bub.channels.wecom_webhook import WeComWebhookChannel
 from bub.social import ConversationRef, LiveSurfaceRef, OutboundAction, ReplyGrant
 
+FAKE_MENTION_USER_ID = "wecom_user_0d54ef21"
+
 
 class FakeChannel:
     def __init__(self, name: str, *, needs_debounce: bool = False) -> None:
@@ -493,7 +495,7 @@ async def test_wecom_webhook_channel_send_text_with_mentions(monkeypatch: pytest
             conversation=ConversationRef(platform="wecom", route_channel="wecom_webhook", chat_id="room"),
             text="hello",
             mentions=[
-                {"kind": "user_id", "value": "zhangsan"},
+                {"kind": "user_id", "value": FAKE_MENTION_USER_ID},
                 {"kind": "mobile", "value": "13800001111"},
                 {"kind": "all", "value": "@all"},
             ],
@@ -505,7 +507,7 @@ async def test_wecom_webhook_channel_send_text_with_mentions(monkeypatch: pytest
             "msgtype": "text",
             "text": {
                 "content": "hello",
-                "mentioned_list": ["zhangsan", "@all"],
+                "mentioned_list": [FAKE_MENTION_USER_ID, "@all"],
                 "mentioned_mobile_list": ["13800001111", "@all"],
             },
         }

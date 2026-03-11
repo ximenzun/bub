@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pytest
 
-from bub.utils import exclude_none, wait_until_stopped, workspace_from_state
+from bub.utils import exclude_none, terminate_process, wait_until_stopped, workspace_from_state
 
 
 def test_exclude_none_keeps_non_none_values() -> None:
@@ -66,3 +66,35 @@ def test_workspace_from_state_falls_back_to_current_directory(monkeypatch: pytes
     workspace = workspace_from_state({"_runtime_workspace": "   "})
 
     assert workspace == tmp_path.resolve()
+
+
+@pytest.mark.asyncio
+async def test_terminate_process_escalates_to_kill_after_timeout() -> None:
+    class FakeProcess:
+        def __init__(self) -> None:
+            self.returncode = None
+            self.pid = None
+            self.terminated = False
+            self.killed = False
+            self.wait_calls = 0
+
+        def terminate(self) -> None:
+            self.terminated = True
+
+        def kill(self) -> None:
+            self.killed = True
+
+        async def wait(self) -> int:
+            self.wait_calls += 1
+            if self.wait_calls == 1:
+                await asyncio.sleep(3600)
+            self.returncode = -9
+            return self.returncode
+
+    process = FakeProcess()
+
+    forced_kill = await terminate_process(process, timeout_seconds=0.01)
+
+    assert forced_kill is True
+    assert process.terminated is True
+    assert process.killed is True
