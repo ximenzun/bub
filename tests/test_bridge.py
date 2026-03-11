@@ -5,6 +5,8 @@ from loguru import logger
 
 from bub.channels.bridge import BridgeChannel
 
+FAKE_WECOM_USER_ID = "wecom_user_7f3a9c1d"
+
 
 class DummyBridgeChannel(BridgeChannel):
     name = "dummy_bridge"
@@ -66,14 +68,14 @@ async def test_bridge_log_record_includes_extra_fields(monkeypatch: pytest.Monke
             "version": "1",
             "level": "warning",
             "message": "diagnostic",
-            "chatId": "HuangJianPing",
+            "chatId": FAKE_WECOM_USER_ID,
             "source": "from.userid",
         }
     )
 
     assert messages == []
     assert warnings == [
-        "bridge.log channel=dummy_bridge message=diagnostic extras={'chatId': 'HuangJianPing', 'source': 'from.userid'}"
+        f"bridge.log channel=dummy_bridge message=diagnostic extras={{'chatId': '{FAKE_WECOM_USER_ID}', 'source': 'from.userid'}}"
     ]
 
     await channel._handle_record(
@@ -86,6 +88,6 @@ async def test_bridge_log_record_includes_extra_fields(monkeypatch: pytest.Monke
     )
 
     assert warnings == [
-        "bridge.log channel=dummy_bridge message=diagnostic extras={'chatId': 'HuangJianPing', 'source': 'from.userid'}",
+        f"bridge.log channel=dummy_bridge message=diagnostic extras={{'chatId': '{FAKE_WECOM_USER_ID}', 'source': 'from.userid'}}",
         "bridge.log channel=dummy_bridge message=warn-diagnostic",
     ]

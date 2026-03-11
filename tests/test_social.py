@@ -14,6 +14,8 @@ from bub.social import (
 )
 from bub.social.compat import attachments_of, inbound_event_of, outbound_actions_of
 
+FAKE_TARGET_USER_ID = "wecom_user_8f12ab34"
+
 
 def test_channel_message_infers_conversation_from_channel_and_chat_id() -> None:
     message = ChannelMessage(session_id="s", channel="telegram", chat_id="42", content="hello")
@@ -65,14 +67,14 @@ def test_outbound_action_from_mapping_preserves_native_card_fields() -> None:
             "conversation": {"platform": "wecom", "chat_id": "chat-1"},
             "content_type": "card",
             "card": {"card_type": "text_notice", "main_title": {"title": "hello"}},
-            "target_ids": ["zhangsan"],
+            "target_ids": [FAKE_TARGET_USER_ID],
             "reply_grant": {"mode": "token", "token": request_id},
         }
     )
 
     assert action.kind == "update_card"
     assert action.card == {"card_type": "text_notice", "main_title": {"title": "hello"}}
-    assert action.target_ids == ["zhangsan"]
+    assert action.target_ids == [FAKE_TARGET_USER_ID]
     assert action.reply_grant == ReplyGrant(mode="token", token=request_id)
 
 

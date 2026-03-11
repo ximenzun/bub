@@ -13,6 +13,8 @@ from bub.channels.bridge_protocol import build_action_frame, build_configure_fra
 from bub.social import Attachment, ConversationRef, OutboundAction, ReplyGrant
 
 BRIDGE_SCRIPT = Path(__file__).resolve().parents[1] / "src/bub/channels/node/wecom_longconn_bridge.mjs"
+FAKE_TARGET_USER_ID = "wecom_user_12ab45cd"
+FAKE_SECOND_TARGET_USER_ID = "wecom_user_98ef76ab"
 
 
 async def _write_frame(process: asyncio.subprocess.Process, frame: dict[str, object]) -> None:
@@ -143,11 +145,15 @@ async def test_node_wecom_longconn_bridge_translates_update_card_from_native_fie
             conversation=ConversationRef(platform="wecom", route_channel="wecom_longconn_bot", chat_id="chat-1"),
             content_type="card",
             card=card,
-            target_ids=["zhangsan", "lisi"],
+            target_ids=[FAKE_TARGET_USER_ID, FAKE_SECOND_TARGET_USER_ID],
             reply_grant=ReplyGrant(mode="token", token=request_id, metadata={"event_type": "template_card_event"}),
         )
     )
 
     request = record["request"]
     assert request["op"] == "updateTemplateCard"
-    assert request["args"] == [{"headers": {"req_id": request_id}}, card, ["zhangsan", "lisi"]]
+    assert request["args"] == [
+        {"headers": {"req_id": request_id}},
+        card,
+        [FAKE_TARGET_USER_ID, FAKE_SECOND_TARGET_USER_ID],
+    ]
