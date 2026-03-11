@@ -83,6 +83,12 @@ async def test_load_state_and_save_state_manage_lifespan_and_context(tmp_path: P
     assert lifespan.entered is True
     assert state["session_id"] == "resolved-session"
     assert state["_runtime_agent"] is impl.agent
+    assert state["_inbound_channel"] == "cli"
+    assert state["_inbound_chat_id"] == "room"
+    assert state["_inbound_message_id"] is None
+    assert state["_inbound_conversation"] == message.conversation
+    assert state["_inbound_reply_grant"] is None
+    assert state["_inbound_metadata"] == {}
     assert state["context"] == message.context_str
 
     try:

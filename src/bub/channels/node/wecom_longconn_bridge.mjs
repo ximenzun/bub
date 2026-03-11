@@ -349,6 +349,13 @@ async function parseIncomingFrame(frame, wsClient, state) {
 
   if (frame.cmd === "aibot_event_callback" || body.msgtype === "event") {
     const eventType = body.event?.eventtype || "event";
+    if (eventType === "disconnected_event") {
+      emit(buildLog("ignored disconnected_event callback", "warning", {
+        msgid: body.msgid || null,
+        bodyKeys: Object.keys(body),
+      }));
+      return;
+    }
     const chatId = target.chatId;
     const sessionId = `${state.channel}:${chatId}`;
     emit({
