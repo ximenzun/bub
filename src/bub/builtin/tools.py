@@ -358,9 +358,18 @@ def show_commands(topic: str = "", *, context: ToolContext) -> str:
 def _render_slash_command_index(commands: list[SlashCommandSpec]) -> str:
     if not commands:
         return "(no slash commands registered)"
-    lines = ["Available slash commands:"]
+    lines = [
+        "Available slash commands:",
+        "",
+        "Use `/commands <topic>` or send `/<topic>` to view command-specific help.",
+    ]
     for command in commands:
         lines.append(f"- {command.name}: {command.summary}")
+    examples = _collect_slash_examples(commands)
+    if examples:
+        lines.append("")
+        lines.append("Quick examples:")
+        lines.extend(f"- {example}" for example in examples)
     return "\n".join(lines)
 
 
@@ -374,7 +383,21 @@ def _render_slash_command_detail(command: SlashCommandSpec) -> str:
         lines.append("")
         lines.append("Examples:")
         lines.extend(f"- {item}" for item in command.examples)
+    lines.append("")
+    lines.append("Send `/commands` to see all available commands.")
     return "\n".join(lines)
+
+
+def _collect_slash_examples(commands: list[SlashCommandSpec], limit: int = 4) -> list[str]:
+    examples: list[str] = []
+    for command in commands:
+        if command.examples:
+            examples.extend(command.examples)
+        elif command.usage:
+            examples.append(command.usage[0])
+        if len(examples) >= limit:
+            break
+    return examples[:limit]
 
 
 def _resolve_path(context: ToolContext, raw_path: str) -> Path:
