@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import os
 import shutil
+import sys
 import uuid
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -12,6 +13,7 @@ from republic import ToolContext
 
 from bub.skills import discover_skills
 from bub.tools import tool
+from bub.utils import terminate_process
 
 if TYPE_CHECKING:
     from bub.builtin.agent import Agent
@@ -104,15 +106,28 @@ async def bash(
 ) -> str:
     """Run a shell command and return its output within a time limit. Raises if the command fails or times out."""
     workspace = context.state.get("_runtime_workspace")
+    process_kwargs: dict[str, Any] = {}
+    if sys.platform != "win32":
+        # Give the shell its own process group so a timeout can tear down all descendants.
+        process_kwargs["start_new_session"] = True
     completed = await asyncio.create_subprocess_shell(
         cmd,
         cwd=cwd or workspace,
         env=_subprocess_env(),
         stdout=asyncio.subprocess.PIPE,
         stderr=asyncio.subprocess.PIPE,
+        **process_kwargs,
     )
-    async with asyncio.timeout(timeout_seconds):
-        stdout_bytes, stderr_bytes = await completed.communicate()
+    try:
+        async with asyncio.timeout(timeout_seconds):
+            stdout_bytes, stderr_bytes = await completed.communicate()
+    except TimeoutError as exc:
+        await terminate_process(
+            completed,
+            timeout_seconds=min(float(timeout_seconds), 5.0),
+            kill_process_group=sys.platform != "win32",
+        )
+        raise TimeoutError(f"command timed out after {timeout_seconds}s: {cmd}") from exc
     stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace").strip()
     stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
     if completed.returncode != 0:

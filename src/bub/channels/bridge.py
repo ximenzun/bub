@@ -15,6 +15,7 @@ from bub.channels.bridge_protocol import BRIDGE_PROTOCOL_VERSION, build_action_f
 from bub.channels.message import ChannelMessage
 from bub.social import OutboundAction, ProvisioningInfo
 from bub.types import MessageHandler
+from bub.utils import terminate_process
 
 
 class BridgeChannel(Channel):
@@ -68,9 +69,12 @@ class BridgeChannel(Channel):
         self._stderr_task = None
         if self._process is not None:
             if self._process.returncode is None:
-                self._process.terminate()
-                with contextlib.suppress(ProcessLookupError):
-                    await self._process.wait()
+                forced_kill = await terminate_process(
+                    self._process,
+                    timeout_seconds=max(self.ready_timeout_seconds, 1.0),
+                )
+                if forced_kill:
+                    logger.warning("bridge.stop force_killed channel={}", self.name)
             self._process = None
         self._ready.clear()
         self._bridge_state = None
