@@ -128,6 +128,8 @@ async def test_node_wecom_longconn_bridge_translates_passive_text_reply_to_reply
     assert request["args"][0] == {"headers": {"req_id": request_id}}
     assert isinstance(request["args"][1], str)
     assert request["args"][2:] == ["hello", True]
+    assert request["fallback"]["op"] == "sendMessage"
+    assert request["fallback"]["args"] == ["chat-1", {"msgtype": "markdown", "markdown": {"content": "hello"}}]
 
 
 @pytest.mark.asyncio

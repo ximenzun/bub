@@ -226,6 +226,13 @@ function buildProactiveRequest(action, msgtype) {
   throw new Error(`WeCom long-connection does not support proactive outbound msgtype '${msgtype}'.`);
 }
 
+function buildFallbackRequest(action, msgtype) {
+  if (msgtype === "text" || msgtype === "markdown" || msgtype === "template_card") {
+    return buildProactiveRequest(action, msgtype);
+  }
+  return null;
+}
+
 async function actionToRequest(action) {
   const msgtype = inferWeComMsgtype(action);
   const { reqId, eventType } = replyContextOf(action);
@@ -254,10 +261,29 @@ async function actionToRequest(action) {
   }
 
   if (frameHeaders) {
-    return buildPassiveReplyRequest(action, frameHeaders, msgtype);
+    const request = await buildPassiveReplyRequest(action, frameHeaders, msgtype);
+    const fallback = buildFallbackRequest(action, msgtype);
+    if (fallback) {
+      request.fallback = fallback;
+    }
+    return request;
   }
 
   return buildProactiveRequest(action, msgtype);
+}
+
+function isReplyAckError(error, errcode) {
+  return Boolean(error && typeof error === "object" && error.errcode === errcode);
+}
+
+function renderError(error) {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (error && typeof error === "object") {
+    return JSON.stringify(error);
+  }
+  return String(error);
 }
 
 async function parseIncomingFrame(frame, wsClient, state) {
@@ -529,7 +555,17 @@ async function mainAsync() {
         try {
           await state.wsClient[request.op](...request.args);
         } catch (error) {
-          emit(buildLog("failed to send action", "error", { error: String(error), op: request.op }));
+          if (isReplyAckError(error, 600039) && request.fallback) {
+            emit(buildLog("reply ack device unsupported, retrying proactive fallback", "warning", { op: request.op }));
+            try {
+              await state.wsClient[request.fallback.op](...request.fallback.args);
+              emit(buildLog("proactive fallback sent", "info", { op: request.fallback.op }));
+              continue;
+            } catch (fallbackError) {
+              emit(buildLog("proactive fallback failed", "error", { error: renderError(fallbackError), op: request.fallback.op }));
+            }
+          }
+          emit(buildLog("failed to send action", "error", { error: renderError(error), op: request.op }));
         }
       }
     }
