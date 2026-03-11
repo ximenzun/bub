@@ -47,6 +47,7 @@ Tests live in `tests/`. Documentation lives in `docs/`.
 
 - Follow the Conventional Commit style used in history, for example `feat:`, `fix:`, `docs:`, `chore:`.
 - Keep commits focused; avoid mixing unrelated refactors with behavior changes.
+- Submit changes through a pull request targeting the `dev` branch. Do not merge feature work directly into `main`, and avoid pushing ad-hoc fixes straight to `dev` without a PR.
 - For PRs, include:
   - what changed and why
   - impacted modules or commands

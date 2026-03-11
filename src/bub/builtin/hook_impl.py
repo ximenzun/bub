@@ -10,6 +10,7 @@ from bub.builtin.agent import Agent
 from bub.builtin.model_backend import RepublicModelBackend
 from bub.channels.base import Channel
 from bub.channels.message import ChannelMessage
+from bub.commands import SlashCommandSpec, translate_registered_slash_command
 from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
@@ -93,6 +94,9 @@ class BuiltinImpl:
     @hookimpl
     def build_prompt(self, message: ChannelMessage, session_id: str, state: State) -> PromptInput:
         content = content_of(message)
+        if translated := translate_registered_slash_command(content, self.framework.get_slash_commands()):
+            message.kind = "command"
+            return translated
         if content.startswith(","):
             message.kind = "command"
             return content
@@ -120,6 +124,24 @@ class BuiltinImpl:
         app.command("chat")(cli.chat)
         app.command("hooks", hidden=True)(cli.list_hooks)
         app.command("message", hidden=True)(app.command("gateway")(cli.gateway))
+
+    @hookimpl
+    def provide_slash_commands(self) -> list[SlashCommandSpec]:
+        return [
+            SlashCommandSpec(
+                name="/commands",
+                summary="Show available chat commands.",
+                usage=("/commands", "/commands <topic>"),
+                examples=("/commands repo", "/commands git"),
+            ),
+            SlashCommandSpec(
+                name="/help",
+                summary="Alias for /commands.",
+                usage=("/help", "/help <topic>"),
+                examples=("/help repo",),
+                topic="help",
+            ),
+        ]
 
     def _read_agents_file(self, state: State) -> str:
         workspace = state.get("_runtime_workspace", str(Path.cwd()))

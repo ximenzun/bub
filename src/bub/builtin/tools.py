@@ -12,6 +12,7 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from pydantic import BaseModel, Field
 from republic import ToolContext
 
+from bub.commands import SlashCommandSpec
 from bub.skills import discover_skills
 from bub.tools import tool
 from bub.utils import terminate_process
@@ -326,6 +327,7 @@ def show_help() -> str:
         "Commands use ',' at line start.\n"
         "Known internal commands:\n"
         "  ,help\n"
+        "  ,commands\n"
         "  ,skill name=foo\n"
         "  ,tape.info\n"
         "  ,tape.search query=error\n"
@@ -337,6 +339,42 @@ def show_help() -> str:
         "  ,fs.edit path=tmp.txt old=hello new=world\n"
         "Any unknown command after ',' is executed as shell via bash."
     )
+
+
+@tool(context=True, name="commands")
+def show_commands(topic: str = "", *, context: ToolContext) -> str:
+    """Show available chat slash commands and their usage."""
+    agent = _get_agent(context)
+    commands = agent.framework.get_slash_commands()
+    topic_name = topic.strip().casefold().lstrip("/")
+    if topic_name:
+        for command in commands:
+            if command.topic_key == topic_name or command.name.lstrip("/").casefold() == topic_name:
+                return _render_slash_command_detail(command)
+        return f"(no such slash command: {topic_name})\n\n{_render_slash_command_index(commands)}"
+    return _render_slash_command_index(commands)
+
+
+def _render_slash_command_index(commands: list[SlashCommandSpec]) -> str:
+    if not commands:
+        return "(no slash commands registered)"
+    lines = ["Available slash commands:"]
+    for command in commands:
+        lines.append(f"- {command.name}: {command.summary}")
+    return "\n".join(lines)
+
+
+def _render_slash_command_detail(command: SlashCommandSpec) -> str:
+    lines = [f"{command.name}: {command.summary}"]
+    if command.usage:
+        lines.append("")
+        lines.append("Usage:")
+        lines.extend(f"- {item}" for item in command.usage)
+    if command.examples:
+        lines.append("")
+        lines.append("Examples:")
+        lines.extend(f"- {item}" for item in command.examples)
+    return "\n".join(lines)
 
 
 def _resolve_path(context: ToolContext, raw_path: str) -> Path:

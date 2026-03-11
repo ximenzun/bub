@@ -22,6 +22,7 @@ from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, Outboun
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
+    from bub.commands import SlashCommandSpec
     from bub.model_backend import ModelBackend
 
 
@@ -298,6 +299,15 @@ class BubFramework:
 
     def get_model_backend(self) -> ModelBackend | None:
         return self._hook_runtime.call_first_sync("provide_model_backend")
+
+    def get_slash_commands(self) -> list[SlashCommandSpec]:
+        commands: dict[str, SlashCommandSpec] = {}
+        for result in self._hook_runtime.call_many_sync("provide_slash_commands"):
+            for command in result:
+                key = command.name.casefold()
+                if key not in commands:
+                    commands[key] = command
+        return sorted(commands.values(), key=lambda item: item.name.casefold())
 
     def get_system_prompt(self, prompt: str, state: dict[str, Any]) -> str:
         return "\n\n".join(

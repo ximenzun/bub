@@ -14,6 +14,7 @@ from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, PromptI
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
+    from bub.commands import SlashCommandSpec
     from bub.model_backend import ModelBackend
 
 BUB_HOOK_NAMESPACE = "bub"
@@ -92,6 +93,11 @@ class BubHookSpecs:
     def provide_model_backend(self) -> ModelBackend:
         """Provide the model backend used to build Bub's runtime LLM client."""
         ...
+
+    @hookspec
+    def provide_slash_commands(self) -> list[SlashCommandSpec]:
+        """Provide discoverable slash commands for chat channels."""
+        raise NotImplementedError
 
     @hookspec
     def provide_channels(self, message_handler: MessageHandler) -> list[Channel]:

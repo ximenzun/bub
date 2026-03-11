@@ -8,6 +8,7 @@ import pytest
 from bub.builtin.hook_impl import AGENTS_FILE_NAME, DEFAULT_SYSTEM_PROMPT, BuiltinImpl
 from bub.builtin.store import FileTapeStore
 from bub.channels.message import ChannelMessage
+from bub.commands import SlashCommandSpec
 from bub.framework import BubFramework
 from bub.social import Attachment, ConversationRef, OutboundAction
 from bub.types import ModelEvent
@@ -118,6 +119,22 @@ def test_build_prompt_marks_commands_and_prefixes_context(tmp_path: Path) -> Non
     assert command_prompt == ",help"
     assert command.kind == "command"
     assert normal_prompt == f"{normal.context_str}\n---\nhello"
+
+
+def test_build_prompt_translates_builtin_slash_help_commands(tmp_path: Path) -> None:
+    framework, impl, _ = _build_impl(tmp_path)
+    framework.get_slash_commands = lambda: [  # type: ignore[method-assign]
+        SlashCommandSpec(name="/repo", summary="Repo"),
+        SlashCommandSpec(name="/git", summary="Git"),
+    ]
+
+    commands = ChannelMessage(session_id="s", channel="wecom_longconn_bot", chat_id="room", content="/commands")
+    repo = ChannelMessage(session_id="s", channel="wecom_longconn_bot", chat_id="room", content="/repo")
+    git_help = ChannelMessage(session_id="s", channel="wecom_longconn_bot", chat_id="room", content="/git help")
+
+    assert impl.build_prompt(commands, session_id="s", state={}) == ",commands"
+    assert impl.build_prompt(repo, session_id="s", state={}) == ",commands topic=repo"
+    assert impl.build_prompt(git_help, session_id="s", state={}) == ",commands topic=git"
 
 
 def test_build_prompt_includes_image_attachments_as_multimodal_parts(tmp_path: Path) -> None:
