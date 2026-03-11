@@ -186,7 +186,7 @@ def test_system_prompt_ignores_missing_agents_file(tmp_path: Path) -> None:
     assert result == DEFAULT_SYSTEM_PROMPT + "\n\n"
 
 
-def test_provide_channels_returns_wecom_telegram_and_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+def test_provide_channels_returns_telegram_and_cli(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     framework, impl, agent = _build_impl(tmp_path)
     framework.get_slash_commands = lambda: [  # type: ignore[method-assign]
         SlashCommandSpec(name="/commands", summary="Show available chat commands."),
@@ -207,39 +207,22 @@ def test_provide_channels_returns_wecom_telegram_and_cli(tmp_path: Path, monkeyp
             self.on_receive = on_receive
             self.slash_commands = slash_commands
 
-    class DummyWeComWebhookChannel:
-        name = "wecom_webhook"
-
-        def __init__(self) -> None:
-            self.created = True
-
-    class DummyWeComLongConnBotChannel:
-        name = "wecom_longconn_bot"
-
-        def __init__(self, on_receive) -> None:
-            self.on_receive = on_receive
-
     import bub.channels.cli
     import bub.channels.telegram
-    import bub.channels.wecom_longconn_bot
-    import bub.channels.wecom_webhook
 
     monkeypatch.setattr(bub.channels.cli, "CliChannel", DummyCliChannel)
     monkeypatch.setattr(bub.channels.telegram, "TelegramChannel", DummyTelegramChannel)
-    monkeypatch.setattr(bub.channels.wecom_longconn_bot, "WeComLongConnBotChannel", DummyWeComLongConnBotChannel)
-    monkeypatch.setattr(bub.channels.wecom_webhook, "WeComWebhookChannel", DummyWeComWebhookChannel)
 
     def message_handler(message) -> None:
         return None
 
     channels = impl.provide_channels(message_handler)
 
-    assert [channel.name for channel in channels] == ["wecom_webhook", "wecom_longconn_bot", "telegram", "cli"]
+    assert [channel.name for channel in channels] == ["telegram", "cli"]
+    assert channels[0].on_receive is message_handler
+    assert channels[0].slash_commands == [("/commands", "Show available chat commands."), ("/help", "Alias for /commands.")]
     assert channels[1].on_receive is message_handler
-    assert channels[2].on_receive is message_handler
-    assert channels[2].slash_commands == [("/commands", "Show available chat commands."), ("/help", "Alias for /commands.")]
-    assert channels[3].on_receive is message_handler
-    assert channels[3].agent is agent
+    assert channels[1].agent is agent
 
 
 @pytest.mark.asyncio

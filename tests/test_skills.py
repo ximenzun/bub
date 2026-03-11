@@ -102,10 +102,10 @@ def test_render_skills_prompt_includes_expanded_body(tmp_path: Path) -> None:
     assert "- skill-b: desc-b" in rendered
 
 
-def test_builtin_skill_tree_includes_wecom_skill() -> None:
-    skill_path = Path(__file__).resolve().parents[1] / "src" / "bub_skills" / "wecom" / SKILL_FILE_NAME
+def test_builtin_skill_tree_includes_telegram_skill() -> None:
+    skill_path = Path(__file__).resolve().parents[1] / "src" / "bub_skills" / "telegram" / SKILL_FILE_NAME
 
     assert skill_path.is_file()
     content = skill_path.read_text(encoding="utf-8")
-    assert "name: wecom" in content
-    assert "Enterprise WeCom outbound communication skill" in content
+    assert "name: telegram" in content
+    assert "Telegram Bot skill" in content
