@@ -65,7 +65,16 @@ class BuiltinImpl:
         lifespan = field_of(message, "lifespan")
         if lifespan is not None:
             await lifespan.__aenter__()
-        state = {"session_id": session_id, "_runtime_agent": self.agent}
+        state = {
+            "session_id": session_id,
+            "_runtime_agent": self.agent,
+            "_inbound_channel": message.channel,
+            "_inbound_chat_id": message.chat_id,
+            "_inbound_message_id": message.message_id,
+            "_inbound_conversation": message.conversation,
+            "_inbound_reply_grant": message.reply_grant,
+            "_inbound_metadata": dict(message.metadata),
+        }
         if context := field_of(message, "context_str"):
             state["context"] = context
         return state
