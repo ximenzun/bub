@@ -110,7 +110,7 @@ Other hook consumers:
 
 - `register_cli_commands`: called by `call_many_sync`
 - `provide_channels`: called by `call_many_sync` in `BubFramework.get_channels()`
-- `system_prompt`, `provide_tape_store`: consumed by `BubFramework` and the builtin `Agent`
+- `system_prompt`, `provide_tape_store`, `provide_model_backend`: consumed by `BubFramework` and the builtin `Agent`
 
 ## 6) Priority And Override Rules
 
@@ -127,8 +127,30 @@ Other hook consumers:
   - `register_cli_commands`
   - `provide_channels`
   - `provide_tape_store`
+  - `provide_model_backend`
 
-## 8) Signature Matching
+## 8) Override The Model Backend
+
+Model/provider integration can be replaced without reimplementing the whole agent loop.
+Implement `provide_model_backend` and return an object with a `build_llm(...)` method compatible with `bub.model_backend.ModelBackend`.
+
+Example:
+
+```python
+from __future__ import annotations
+
+from bub import hookimpl
+from bub.builtin.model_backend import RepublicModelBackend
+
+
+class MyPlugin:
+    @hookimpl
+    def provide_model_backend(self):
+        backend = RepublicModelBackend()
+        return backend
+```
+
+## 9) Signature Matching
 
 `HookRuntime` passes only parameters declared in your function signature.
 You can safely omit unused hook arguments.
@@ -145,7 +167,7 @@ class SessionPlugin:
         return "my-session"
 ```
 
-## 9) Minimal End-To-End Example
+## 10) Minimal End-To-End Example
 
 ```python
 from __future__ import annotations
@@ -173,7 +195,7 @@ uv run bub run "hello"
 
 Check that your plugin is listed for `build_prompt` / `run_model_stream`, and output reflects your override.
 
-## 10) Common Pitfalls
+## 11) Common Pitfalls
 
 - Defining `@tool` functions without importing the module from your plugin means the tools never register.
 - Returning awaitables from hooks invoked via sync paths (`call_many_sync` / `call_first_sync`) causes skip.

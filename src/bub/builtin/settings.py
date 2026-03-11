@@ -7,7 +7,8 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 DEFAULT_MODEL = "openrouter:qwen/qwen3-coder-next"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_HOME = pathlib.Path.home() / ".bub"
-type ApiMode = Literal["auto", "chat", "responses", "anthropic", "gemini"]
+type TransportMode = Literal["auto", "chat", "responses", "native"]
+type ApiMode = TransportMode
 
 
 class AgentSettings(BaseSettings):

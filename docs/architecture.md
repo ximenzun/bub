@@ -53,6 +53,7 @@ Builtin `BuiltinImpl` behavior includes:
 - `register_cli_commands`: installs `run`, `gateway`, `chat`, plus hidden compatibility/diagnostic commands.
 - `provide_channels`: returns `telegram` and `cli` channel adapters.
 - `provide_tape_store`: returns a file-backed tape store under `~/.bub/tapes`.
+- `provide_model_backend`: returns the default republic + any-llm model backend, and can be overridden by plugins.
 
 ## Boundaries
 

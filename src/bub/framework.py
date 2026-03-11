@@ -22,6 +22,7 @@ from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, Outboun
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
+    from bub.model_backend import ModelBackend
 
 
 @dataclass(frozen=True)
@@ -294,6 +295,9 @@ class BubFramework:
 
     def get_tape_store(self) -> TapeStore | AsyncTapeStore | None:
         return self._hook_runtime.call_first_sync("provide_tape_store")
+
+    def get_model_backend(self) -> ModelBackend | None:
+        return self._hook_runtime.call_first_sync("provide_model_backend")
 
     def get_system_prompt(self, prompt: str, state: dict[str, Any]) -> str:
         return "\n\n".join(

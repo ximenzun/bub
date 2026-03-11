@@ -97,6 +97,27 @@ def test_get_system_prompt_uses_priority_order_and_skips_empty_results() -> None
     assert prompt == "low\n\nhigh"
 
 
+def test_get_model_backend_prefers_high_priority_plugin() -> None:
+    framework = BubFramework()
+    low_backend = object()
+    high_backend = object()
+
+    class LowPriorityPlugin:
+        @hookimpl
+        def provide_model_backend(self):
+            return low_backend
+
+    class HighPriorityPlugin:
+        @hookimpl
+        def provide_model_backend(self):
+            return high_backend
+
+    framework._plugin_manager.register(LowPriorityPlugin(), name="low")
+    framework._plugin_manager.register(HighPriorityPlugin(), name="high")
+
+    assert framework.get_model_backend() is high_backend
+
+
 def test_builtin_cli_exposes_gateway_and_keeps_message_hidden_alias() -> None:
     framework = BubFramework()
     framework.load_hooks()
