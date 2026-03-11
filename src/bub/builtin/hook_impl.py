@@ -1,5 +1,6 @@
 import sys
 from pathlib import Path
+from typing import cast
 
 import typer
 from loguru import logger
@@ -12,7 +13,8 @@ from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
 from bub.social import ConversationRef, OutboundAction, ReplyGrant, normalize_surface
-from bub.types import Envelope, MessageHandler, ModelEvent, State
+from bub.social.types import Attachment, ContentKind
+from bub.types import Envelope, MessageHandler, ModelEvent, PromptInput, State
 
 AGENTS_FILE_NAME = "AGENTS.md"
 DEFAULT_SYSTEM_PROMPT = """\
@@ -74,17 +76,22 @@ class BuiltinImpl:
             await lifespan.__aexit__(tp, value, traceback)
 
     @hookimpl
-    def build_prompt(self, message: ChannelMessage, session_id: str, state: State) -> str:
+    def build_prompt(self, message: ChannelMessage, session_id: str, state: State) -> PromptInput:
         content = content_of(message)
         if content.startswith(","):
             message.kind = "command"
             return content
         context = field_of(message, "context_str")
         context_prefix = f"{context}\n---\n" if context else ""
-        return f"{context_prefix}{content}"
+        text = f"{context_prefix}{content}"
+        attachments = field_of(message, "attachments") or []
+        image_parts = _attachment_prompt_parts(attachments)
+        if image_parts:
+            return [{"type": "text", "text": text}, *image_parts]
+        return text
 
     @hookimpl
-    async def run_model_stream(self, prompt: str, session_id: str, state: State):
+    async def run_model_stream(self, prompt: PromptInput, session_id: str, state: State):
         async for event in self.agent.run_stream(session_id=session_id, prompt=prompt, state=state):
             if not isinstance(event, ModelEvent):
                 raise TypeError(f"Agent.run_stream() must yield ModelEvent, got {type(event)!r}")
@@ -110,7 +117,7 @@ class BuiltinImpl:
             return ""
 
     @hookimpl
-    def system_prompt(self, prompt: str, state: State) -> str:
+    def system_prompt(self, prompt: PromptInput, state: State) -> str:
         # Read the content of AGENTS.md under workspace
         return DEFAULT_SYSTEM_PROMPT + "\n\n" + self._read_agents_file(state)
 
@@ -169,11 +176,12 @@ class BuiltinImpl:
     ) -> list[OutboundAction]:
         if not model_output.strip():
             return []
+        content_type = cast(ContentKind, str(field_of(message, "content_type", "text")))
         action = OutboundAction(
             kind="reply_message" if self._reply_to_message_id(message) else "send_message",
             conversation=self._conversation_for(message),
             text=model_output,
-            content_type=str(field_of(message, "content_type", "text")),
+            content_type=content_type,
             message_id=_string_or_none(field_of(message, "message_id")),
             reply_to_message_id=self._reply_to_message_id(message),
             reply_grant=self._reply_grant_for(message),
@@ -238,3 +246,19 @@ def _string_or_none(value: object) -> str | None:
     if value is None:
         return None
     return str(value)
+
+
+def _attachment_prompt_parts(raw_attachments: object) -> list[dict[str, object]]:
+    if not isinstance(raw_attachments, list):
+        return []
+    prompt_parts: list[dict[str, object]] = []
+    for item in raw_attachments:
+        attachment = item
+        if isinstance(item, dict):
+            attachment = Attachment.from_mapping(item)
+        if not isinstance(attachment, Attachment):
+            continue
+        if not attachment.url or not attachment.content_type.startswith("image/"):
+            continue
+        prompt_parts.append({"type": "image_url", "image_url": {"url": attachment.url}})
+    return prompt_parts

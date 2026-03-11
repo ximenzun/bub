@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import asyncio
-import json
 import os
 import shutil
+import uuid
 from pathlib import Path
-from typing import TYPE_CHECKING, cast
+from typing import TYPE_CHECKING, Any, Literal, cast
 
+from pydantic import BaseModel, Field
 from republic import ToolContext
 
 from bub.skills import discover_skills
@@ -14,6 +15,8 @@ from bub.tools import tool
 
 if TYPE_CHECKING:
     from bub.builtin.agent import Agent
+
+type EntryKind = Literal["event", "anchor", "system", "message", "tool_call", "tool_result"]
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 DEFAULT_HEADERS = {"accept": "text/markdown"}
@@ -24,6 +27,37 @@ def _get_agent(context: ToolContext) -> Agent:
     if "_runtime_agent" not in context.state:
         raise RuntimeError("no runtime agent found in tool context")
     return cast("Agent", context.state["_runtime_agent"])
+
+
+class SearchInput(BaseModel):
+    query: str = Field(..., description="The search query string.")
+    limit: int = Field(20, description="Maximum number of search results to return.")
+    start: str | None = Field(None, description="Optional start date to filter entries (ISO format).")
+    end: str | None = Field(None, description="Optional end date to filter entries (ISO format).")
+    kinds: list[EntryKind] = Field(
+        default=["message", "tool_result"],
+        description="Optional list of entry kinds to filter search results.",
+    )
+
+
+class SubAgentInput(BaseModel):
+    prompt: str | list[dict[str, Any]] = Field(
+        ...,
+        description="The initial prompt for the sub-agent, either as a string or multimodal content parts.",
+    )
+    model: str | None = Field(None, description="Optional model override for the sub-agent.")
+    session: str = Field(
+        "temp",
+        description="Session handling strategy: 'inherit', 'temp', or an explicit session id.",
+    )
+    allowed_tools: list[str] | None = Field(
+        None,
+        description="Optional allow-list of tools the sub-agent may use.",
+    )
+    allowed_skills: list[str] | None = Field(
+        None,
+        description="Optional allow-list of skills the sub-agent may use.",
+    )
 
 
 def _resolve_rg_binary() -> Path | None:
@@ -129,7 +163,7 @@ def skill_describe(name: str, *, context: ToolContext) -> str:
     from bub.utils import workspace_from_state
 
     workspace = workspace_from_state(context.state)
-    skill_index = {skill.name: skill for skill in discover_skills(workspace)}
+    skill_index = {skill.name.casefold(): skill for skill in discover_skills(workspace)}
     if name.casefold() not in skill_index:
         return "(no such skill)"
     skill = skill_index[name.casefold()]
@@ -151,14 +185,27 @@ async def tape_info(context: ToolContext) -> str:
     )
 
 
-@tool(context=True, name="tape.search")
-async def tape_search(query: str, limit: int = 20, *, context: ToolContext) -> str:
+@tool(context=True, name="tape.search", model=SearchInput)
+async def tape_search(param: SearchInput, *, context: ToolContext) -> str:
     """Search for entries in the current tape that match the query. Returns a list of matching entries."""
+    import yaml
+
     agent = _get_agent(context)
-    entries = await agent.tapes.search(context.tape or "", query=query, limit=limit)
+    entries = await agent.tapes.search(
+        context.tape or "",
+        query=param.query,
+        limit=param.limit,
+        start=param.start,
+        end=param.end,
+        kinds=tuple(param.kinds),
+    )
     if not entries:
         return "(no matches)"
-    return "\n".join(f"- {json.dumps(entry.payload)}" for entry in entries)
+    return yaml.safe_dump(
+        [{"date": entry.date, "kind": entry.kind, "data": entry.payload} for entry in entries],
+        sort_keys=False,
+        allow_unicode=True,
+    )
 
 
 @tool(context=True, name="tape.reset")
@@ -185,6 +232,28 @@ async def tape_anchors(*, context: ToolContext) -> str:
     if not anchors:
         return "(no anchors)"
     return "\n".join(f"- {anchor.name}" for anchor in anchors)
+
+
+@tool(name="subagent", context=True, model=SubAgentInput)
+async def run_subagent(param: SubAgentInput, *, context: ToolContext) -> str:
+    """Run a task through a constrained sub-agent."""
+    agent = _get_agent(context)
+    session_id = str(context.state.get("session_id", "temp/unknown"))
+    if param.session == "inherit":
+        subagent_session = session_id
+    elif param.session == "temp":
+        subagent_session = f"temp/{uuid.uuid4().hex[:8]}"
+    else:
+        subagent_session = param.session
+    state = {**context.state, "session_id": subagent_session}
+    return await agent.run(
+        session_id=subagent_session,
+        prompt=param.prompt,
+        state=state,
+        model=param.model,
+        allowed_tools=param.allowed_tools,
+        allowed_skills=param.allowed_skills,
+    )
 
 
 @tool(name="web.fetch")
@@ -215,6 +284,7 @@ def show_help() -> str:
         "  ,tape.search query=error\n"
         "  ,tape.handoff name=phase-1 summary='done'\n"
         "  ,tape.anchors\n"
+        "  ,subagent prompt='summarize README' session=temp\n"
         "  ,fs.read path=README.md\n"
         "  ,fs.write path=tmp.txt content='hello'\n"
         "  ,fs.edit path=tmp.txt old=hello new=world\n"

@@ -7,6 +7,7 @@ import inspect
 import re
 import shlex
 import time
+from collections.abc import Collection
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from functools import cached_property
@@ -14,6 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from any_llm import AnyLLM
+from loguru import logger
 from republic import LLM, AsyncTapeStore, ToolAutoResult, ToolContext
 from republic.tape import InMemoryTapeStore, Tape
 
@@ -24,7 +26,7 @@ from bub.builtin.tape import TapeService
 from bub.framework import BubFramework
 from bub.skills import discover_skills, render_skills_prompt
 from bub.tools import REGISTRY, model_tools, render_tools_prompt
-from bub.types import ModelEvent, State
+from bub.types import ModelEvent, PromptInput, State
 from bub.utils import workspace_from_state
 
 CONTINUE_PROMPT = "Continue the task."
@@ -48,19 +50,38 @@ class Agent:
         llm = _build_llm(self.settings, tape_store)
         return TapeService(llm, self.settings.home / "tapes", tape_store)
 
-    async def run(self, *, session_id: str, prompt: str, state: State) -> str:
-        stripped = prompt.strip()
-        if not stripped:
+    async def run(
+        self,
+        *,
+        session_id: str,
+        prompt: PromptInput,
+        state: State,
+        model: str | None = None,
+        allowed_skills: Collection[str] | None = None,
+        allowed_tools: Collection[str] | None = None,
+    ) -> str:
+        if isinstance(prompt, str):
+            stripped = prompt.strip()
+            if not stripped:
+                return "error: empty prompt"
+        elif not prompt:
             return "error: empty prompt"
         tape = self.tapes.session_tape(session_id, workspace_from_state(state))
         tape.context.state.update(state)
-        async with self.tapes.fork_tape(tape.name):
+        merge_back = not session_id.startswith("temp/")
+        async with self.tapes.fork_tape(tape.name, merge_back=merge_back):
             await self.tapes.ensure_bootstrap_anchor(tape.name)
-            if stripped.startswith(","):
-                return await self._run_command(tape=tape, line=stripped)
-            return await self._agent_loop(tape=tape, prompt=stripped)
+            if isinstance(prompt, str) and prompt.strip().startswith(","):
+                return await self._run_command(tape=tape, line=prompt.strip())
+            return await self._agent_loop(
+                tape=tape,
+                prompt=prompt,
+                model=model,
+                allowed_skills=allowed_skills,
+                allowed_tools=allowed_tools,
+            )
 
-    async def run_stream(self, *, session_id: str, prompt: str, state: State):
+    async def run_stream(self, *, session_id: str, prompt: PromptInput, state: State):
         result = await self.run(session_id=session_id, prompt=prompt, state=state)
         yield ModelEvent(kind="text_delta", text=result)
 
@@ -104,14 +125,30 @@ class Agent:
             }
             await self.tapes.append_event(tape.name, "command", event_payload)
 
-    async def _agent_loop(self, *, tape: Tape, prompt: str) -> str:
-        next_prompt = prompt
+    async def _agent_loop(
+        self,
+        *,
+        tape: Tape,
+        prompt: PromptInput,
+        model: str | None = None,
+        allowed_skills: Collection[str] | None = None,
+        allowed_tools: Collection[str] | None = None,
+    ) -> str:
+        next_prompt: PromptInput = prompt
+        display_model = model or self.settings.model
 
         for step in range(1, self.settings.max_steps + 1):
             start = time.monotonic()
+            logger.info("loop.step step={} tape={} model={}", step, tape.name, display_model)
             await self.tapes.append_event(tape.name, "loop.step.start", {"step": step, "prompt": next_prompt})
             try:
-                output = await self._run_tools_once(tape=tape, prompt=next_prompt)
+                output = await self._run_tools_once(
+                    tape=tape,
+                    prompt=next_prompt,
+                    model=model,
+                    allowed_skills=allowed_skills,
+                    allowed_tools=allowed_tools,
+                )
             except Exception as exc:
                 elapsed_ms = int((time.monotonic() - start) * 1000)
                 await self.tapes.append_event(
@@ -172,31 +209,69 @@ class Agent:
 
         raise RuntimeError(f"max_steps_reached={self.settings.max_steps}")
 
-    def _load_skills_prompt(self, prompt: str, workspace: Path) -> str:
-        skill_index = {skill.name: skill for skill in discover_skills(workspace)}
-        expanded_skills = set(HINT_RE.findall(prompt)) & set(skill_index.keys())
+    def _load_skills_prompt(self, prompt: str, workspace: Path, allowed_skills: set[str] | None = None) -> str:
+        skill_index = {
+            skill.name.casefold(): skill
+            for skill in discover_skills(workspace)
+            if allowed_skills is None or skill.name.casefold() in allowed_skills
+        }
+        expanded_skills = {name.casefold() for name in HINT_RE.findall(prompt)} & set(skill_index.keys())
         return render_skills_prompt(list(skill_index.values()), expanded_skills=expanded_skills)
 
-    async def _run_tools_once(self, *, tape: Tape, prompt: str) -> ToolAutoResult:
-        extra_options = {"extra_headers": DEFAULT_BUB_HEADERS} if self.settings.model.startswith("openrouter:") else {}
+    async def _run_tools_once(
+        self,
+        *,
+        tape: Tape,
+        prompt: PromptInput,
+        model: str | None = None,
+        allowed_tools: Collection[str] | None = None,
+        allowed_skills: Collection[str] | None = None,
+    ) -> ToolAutoResult:
+        selected_model = model or self.settings.model
+        extra_options = {"extra_headers": DEFAULT_BUB_HEADERS} if selected_model.startswith("openrouter:") else {}
+        prompt_text = prompt if isinstance(prompt, str) else _extract_text_from_parts(prompt)
+        if allowed_tools is not None:
+            allowed_tools = {name.casefold() for name in allowed_tools}
+        if allowed_skills is not None:
+            allowed_skills = {name.casefold() for name in allowed_skills}
+        tools = (
+            [tool for tool in REGISTRY.values() if tool.name.casefold() in allowed_tools]
+            if allowed_tools is not None
+            else list(REGISTRY.values())
+        )
+        request_kwargs: dict[str, Any] = {
+            "system_prompt": self._system_prompt(
+                prompt_text,
+                state=tape.context.state,
+                tools_prompt=render_tools_prompt(tools),
+                allowed_skills=allowed_skills,
+            ),
+            "max_tokens": self.settings.max_tokens,
+            "tools": model_tools(tools),
+            "model": model,
+            **extra_options,
+        }
+        if isinstance(prompt, str):
+            request_kwargs["prompt"] = prompt
+        else:
+            request_kwargs["messages"] = [{"role": "user", "content": prompt}]
         async with asyncio.timeout(self.settings.model_timeout_seconds):
-            return await tape.run_tools_async(
-                prompt=prompt,
-                system_prompt=self._system_prompt(prompt, state=tape.context.state),
-                max_tokens=self.settings.max_tokens,
-                tools=model_tools(REGISTRY.values()),
-                **extra_options,
-            )
+            return await tape.run_tools_async(**request_kwargs)
 
-    def _system_prompt(self, prompt: str, state: State) -> str:
+    def _system_prompt(
+        self,
+        prompt: str,
+        state: State,
+        tools_prompt: str,
+        allowed_skills: set[str] | None = None,
+    ) -> str:
         blocks: list[str] = []
         if result := self.framework.get_system_prompt(prompt=prompt, state=state):
             blocks.append(result)
-        tools_prompt = render_tools_prompt(REGISTRY.values())
         if tools_prompt:
             blocks.append(tools_prompt)
         workspace = workspace_from_state(state)
-        if skills_prompt := self._load_skills_prompt(prompt, workspace):
+        if skills_prompt := self._load_skills_prompt(prompt, workspace, allowed_skills):
             blocks.append(skills_prompt)
         return "\n\n".join(blocks)
 
@@ -312,3 +387,7 @@ def _parse_args(args_tokens: list[str]) -> Args:
         else:
             positional.append(token)
     return Args(positional=positional, kwargs=kwargs)
+
+
+def _extract_text_from_parts(parts: list[dict[str, Any]]) -> str:
+    return "\n".join(str(part.get("text", "")) for part in parts if part.get("type") == "text")

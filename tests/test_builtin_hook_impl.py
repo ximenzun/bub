@@ -9,7 +9,7 @@ from bub.builtin.hook_impl import AGENTS_FILE_NAME, DEFAULT_SYSTEM_PROMPT, Built
 from bub.builtin.store import FileTapeStore
 from bub.channels.message import ChannelMessage
 from bub.framework import BubFramework
-from bub.social import ConversationRef, OutboundAction
+from bub.social import Attachment, ConversationRef, OutboundAction
 from bub.types import ModelEvent
 
 
@@ -112,6 +112,27 @@ def test_build_prompt_marks_commands_and_prefixes_context(tmp_path: Path) -> Non
     assert command_prompt == ",help"
     assert command.kind == "command"
     assert normal_prompt == f"{normal.context_str}\n---\nhello"
+
+
+def test_build_prompt_includes_image_attachments_as_multimodal_parts(tmp_path: Path) -> None:
+    _, impl, _ = _build_impl(tmp_path)
+    message = ChannelMessage(
+        session_id="s",
+        channel="telegram",
+        chat_id="room",
+        content="look at this",
+        attachments=[
+            Attachment(content_type="image/png", url="data:image/png;base64,AAAA"),
+            Attachment(content_type="application/pdf", url="data:application/pdf;base64,BBBB"),
+        ],
+    )
+
+    prompt = impl.build_prompt(message, session_id="s", state={})
+
+    assert prompt == [
+        {"type": "text", "text": f"{message.context_str}\n---\nlook at this"},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+    ]
 
 
 @pytest.mark.asyncio

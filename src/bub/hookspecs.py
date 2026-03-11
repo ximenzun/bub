@@ -10,7 +10,7 @@ from republic import AsyncTapeStore
 from republic.tape import TapeStore
 
 from bub.social import OutboundAction
-from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, State
+from bub.types import Envelope, MessageHandler, ModelEvent, ModelStream, PromptInput, State
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
@@ -34,12 +34,12 @@ class BubHookSpecs:
         raise NotImplementedError
 
     @hookspec(firstresult=True)
-    def build_prompt(self, message: Envelope, session_id: str, state: State) -> str:
+    def build_prompt(self, message: Envelope, session_id: str, state: State) -> PromptInput:
         """Build model prompt for this turn."""
         raise NotImplementedError
 
     @hookspec(firstresult=True)
-    def run_model_stream(self, prompt: str, session_id: str, state: State) -> ModelStream | Iterable[ModelEvent]:
+    def run_model_stream(self, prompt: PromptInput, session_id: str, state: State) -> ModelStream | Iterable[ModelEvent]:
         """Run model for one turn and emit model events."""
         raise NotImplementedError
 
@@ -78,7 +78,7 @@ class BubHookSpecs:
         """Observe framework errors from any stage."""
 
     @hookspec
-    def system_prompt(self, prompt: str, state: State) -> str:
+    def system_prompt(self, prompt: PromptInput, state: State) -> str:
         """Provide a system prompt to be prepended to all model prompts."""
         raise NotImplementedError
 
