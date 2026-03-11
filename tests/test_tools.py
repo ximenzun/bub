@@ -211,19 +211,23 @@ async def test_builtin_bash_returns_no_matches_for_rg_exit_one(monkeypatch: pyte
 
 
 @pytest.mark.asyncio
-async def test_builtin_bash_rejects_nested_wecom_longconn_send_for_inbound_longconn_sessions() -> None:
+async def test_builtin_bash_returns_guidance_for_nested_wecom_longconn_send_for_inbound_longconn_sessions() -> None:
     from bub.builtin import tools as builtin_tools
 
-    with pytest.raises(RuntimeError, match=r"nested wecom_longconn_send\.py is disabled"):
-        await cast(Tool, builtin_tools.bash).run(
-            cmd="uv run src/bub_skills/wecom/scripts/wecom_longconn_send.py --chat-id test",
-            timeout_seconds=1,
-            context=ToolContext(
-                tape="t",
-                run_id="r",
-                state={
-                    "_runtime_workspace": "/tmp",  # noqa: S108
-                    "_inbound_channel": "wecom_longconn_bot",
-                },
-            ),
-        )
+    result = await cast(Tool, builtin_tools.bash).run(
+        cmd="uv run src/bub_skills/wecom/scripts/wecom_longconn_send.py --chat-id test",
+        timeout_seconds=1,
+        context=ToolContext(
+            tape="t",
+            run_id="r",
+            state={
+                "_runtime_workspace": "/tmp",  # noqa: S108
+                "_inbound_channel": "wecom_longconn_bot",
+            },
+        ),
+    )
+
+    assert result == (
+        "nested wecom_longconn_send.py is disabled while handling wecom_longconn_bot inbound messages; "
+        "use Bub's native outbound routing and return the final text reply directly instead"
+    )

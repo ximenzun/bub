@@ -116,15 +116,15 @@ def _is_search_no_match(cmd: str, returncode: int, stderr_text: str) -> bool:
     return len(argv) > 1 and executable == "git" and argv[1] == "grep"
 
 
-def _reject_nested_wecom_longconn_send(cmd: str, context: ToolContext) -> None:
+def _nested_wecom_longconn_send_guidance(cmd: str, context: ToolContext) -> str | None:
     inbound_channel = context.state.get("_inbound_channel")
     if inbound_channel != "wecom_longconn_bot":
-        return
+        return None
     if "wecom_longconn_send.py" not in cmd:
-        return
-    raise RuntimeError(
+        return None
+    return (
         "nested wecom_longconn_send.py is disabled while handling wecom_longconn_bot inbound messages; "
-        "use Bub's native outbound routing instead"
+        "use Bub's native outbound routing and return the final text reply directly instead"
     )
 
 
@@ -133,7 +133,8 @@ async def bash(
     cmd: str, cwd: str | None = None, timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS, *, context: ToolContext
 ) -> str:
     """Run a shell command and return its output within a time limit. Raises if the command fails or times out."""
-    _reject_nested_wecom_longconn_send(cmd, context)
+    if guidance := _nested_wecom_longconn_send_guidance(cmd, context):
+        return guidance
     workspace = context.state.get("_runtime_workspace")
     process_kwargs: dict[str, Any] = {}
     if sys.platform != "win32":

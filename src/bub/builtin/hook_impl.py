@@ -29,11 +29,15 @@ Before ending the run, you MUST determine whether a response needs to be sent to
 3. If it is a casual chat, does the conversation need to be continued?
 
 **IMPORTANT:** Your plain/direct reply in this chat will be ignored.
-**Therefore, you MUST send messages via channel using the correct skill if a response is needed.**
+For inbound conversations on Bub's native channels (`cli`, `telegram`, `wecom_longconn_bot`), your final plain text answer will be routed automatically by Bub.
+Do NOT call channel scripts or channel skills for an ordinary reply on those inbound sessions.
+Only use channel-specific skills/tools when you need a proactive message, a template-card update, or another special native action that plain text cannot express.
+In particular, do NOT invoke `wecom_longconn_send.py` while handling an inbound `wecom_longconn_bot` message.
 
 When responding to a channel message, you MUST:
 1. Identify the channel from the message metadata (e.g., `$telegram`, `$discord`)
-2. Send the message as instructed by the channel skill (e.g., `telegram` skill for `$telegram` channel)
+2. Use the native Bub reply path for ordinary replies on native inbound channels
+3. Use the channel skill only for proactive sends or special channel-native actions
 </response_instruct>
 <context_contract>
 Excessively long context may cause model call failures. In this case, you MAY use tape.info to the token usage and you SHOULD use tape.handoff tool to shorten the length of the retrieved history.
