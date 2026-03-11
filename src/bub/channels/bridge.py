@@ -176,7 +176,13 @@ class BridgeChannel(Channel):
             await self._on_receive(ChannelMessage(**payload))
             return
         if record_type == "log":
-            logger.info("bridge.log channel={} message={}", self.name, record.get("message", ""))
+            level = str(record.get("level", "info")).lower()
+            log_method = getattr(logger, level, logger.info)
+            extras = {key: value for key, value in record.items() if key not in {"type", "version", "level", "message"}}
+            if extras:
+                log_method("bridge.log channel={} message={} extras={}", self.name, record.get("message", ""), extras)
+            else:
+                log_method("bridge.log channel={} message={}", self.name, record.get("message", ""))
             return
         logger.debug("bridge.record.ignored channel={} type={}", self.name, record_type)
 

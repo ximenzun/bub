@@ -328,6 +328,16 @@ async function parseIncomingFrame(frame, wsClient, state) {
   const reqId = headers.req_id;
   const target = resolveChatTarget(body, state);
 
+  emit(buildLog("incoming frame target resolved", "info", {
+    chatId: target.chatId,
+    source: target.source,
+    senderUserId: target.senderUserId,
+    chattype: body.chattype || null,
+    msgtype: body.msgtype || frame.cmd || null,
+    msgid: body.msgid || null,
+    bodyKeys: Object.keys(body),
+  }));
+
   if (target.source === "state.chatId") {
     emit(buildLog("incoming frame missing chat target, using state default", "warning", {
       msgtype: body.msgtype || frame.cmd || "unknown",
