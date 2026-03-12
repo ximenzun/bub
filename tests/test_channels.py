@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -11,7 +12,7 @@ from bub.channels.cli import CliChannel
 from bub.channels.handler import BufferedMessageHandler
 from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
-from bub.channels.telegram import BubMessageFilter, TelegramChannel
+from bub.channels.telegram import BubMessageFilter, TelegramChannel, TelegramMessageParser
 from bub.social import ConversationRef, LiveSurfaceRef, OutboundAction, ReplyGrant
 
 
@@ -517,6 +518,55 @@ async def test_telegram_channel_set_draft_falls_back_to_presence_on_telegram_err
     )
 
     assert events == [("presence", {"chat_id": "42", "action": "typing"})]
+
+
+@pytest.mark.asyncio
+async def test_telegram_message_parser_extracts_formatted_links() -> None:
+    parser = TelegramMessageParser()
+    message = SimpleNamespace(
+        text="Docs and https://example.com",
+        caption=None,
+        entities=[
+            SimpleNamespace(type="text_link", url="https://docs.example.com"),
+            SimpleNamespace(type="url", offset=9, length=19),
+        ],
+        caption_entities=[],
+        message_id=1,
+        from_user=SimpleNamespace(username="alice", full_name="Alice", id=7, is_bot=False),
+        date=datetime(2026, 3, 11),
+    )
+
+    content, metadata = await parser.parse(message)
+
+    assert content == "Docs and https://example.com"
+    assert metadata["links"] == ["https://docs.example.com", "https://example.com"]
+
+
+@pytest.mark.asyncio
+async def test_telegram_message_parser_extracts_links_from_caption_entities() -> None:
+    parser = TelegramMessageParser()
+    message = SimpleNamespace(
+        text=None,
+        caption="See portal",
+        entities=[],
+        caption_entities=[SimpleNamespace(type="text_link", url="https://portal.example.com")],
+        message_id=2,
+        from_user=SimpleNamespace(username="alice", full_name="Alice", id=7, is_bot=False),
+        date=datetime(2026, 3, 11),
+        photo=[SimpleNamespace(file_id="file-1", file_size=3, width=1, height=1)],
+    )
+
+    async def fake_download_media(mime_type: str, file_id: str, file_size: int) -> str:
+        assert mime_type == "image/jpeg"
+        assert file_id == "file-1"
+        assert file_size == 3
+        return "data:image/jpeg;base64,aW1n"
+
+    parser._download_media = fake_download_media  # type: ignore[method-assign]
+
+    _content, metadata = await parser.parse(message)
+
+    assert metadata["links"] == ["https://portal.example.com"]
 
 def _async_return(value):
     async def runner(*args, **kwargs):

@@ -32,3 +32,26 @@ async def test_fork_merge_back_false_discards_entries() -> None:
     entries = parent.read("test-tape")
     assert entries is None or len(entries) == 0
 
+
+@pytest.mark.asyncio
+async def test_fork_redacts_multimodal_payload_before_merge_back() -> None:
+    parent = InMemoryTapeStore()
+    store = ForkTapeStore(parent)
+
+    async with store.fork("test-tape", merge_back=True):
+        await store.append(
+            "test-tape",
+            TapeEntry.event(
+                name="step",
+                data={
+                    "content": [
+                        {"type": "text", "text": "hello"},
+                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+                    ]
+                },
+            ),
+        )
+
+    entries = parent.read("test-tape")
+    assert entries is not None
+    assert entries[0].payload["data"]["content"] == [{"type": "text", "text": "hello"}]

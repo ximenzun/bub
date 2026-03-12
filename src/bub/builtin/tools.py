@@ -4,7 +4,6 @@ import asyncio
 import os
 import shlex
 import shutil
-import sys
 import uuid
 from pathlib import Path, PurePath
 from typing import TYPE_CHECKING, Any, Literal, cast
@@ -12,10 +11,10 @@ from typing import TYPE_CHECKING, Any, Literal, cast
 from pydantic import BaseModel, Field
 from republic import ToolContext
 
+from bub.builtin.shell_manager import shell_manager
 from bub.commands import SlashCommandSpec
 from bub.skills import discover_skills
-from bub.tools import tool
-from bub.utils import terminate_process
+from bub.tools import REGISTRY, tool
 
 if TYPE_CHECKING:
     from bub.builtin.agent import Agent
@@ -131,42 +130,60 @@ def _nested_wecom_longconn_send_guidance(cmd: str, context: ToolContext) -> str 
 
 @tool(context=True)
 async def bash(
-    cmd: str, cwd: str | None = None, timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS, *, context: ToolContext
+    cmd: str,
+    cwd: str | None = None,
+    timeout_seconds: int = DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    background: bool = False,
+    *,
+    context: ToolContext,
 ) -> str:
-    """Run a shell command and return its output within a time limit. Raises if the command fails or times out."""
+    """Run a shell command. Use background=true to keep it running and fetch output later."""
     if guidance := _nested_wecom_longconn_send_guidance(cmd, context):
         return guidance
     workspace = context.state.get("_runtime_workspace")
-    process_kwargs: dict[str, Any] = {}
-    if sys.platform != "win32":
-        # Give the shell its own process group so a timeout can tear down all descendants.
-        process_kwargs["start_new_session"] = True
-    completed = await asyncio.create_subprocess_shell(
-        cmd,
-        cwd=cwd or workspace,
-        env=_subprocess_env(),
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-        **process_kwargs,
-    )
+    shell = await shell_manager.start(cmd=cmd, cwd=cwd or workspace, env=_subprocess_env())
+    if background:
+        return f"started: {shell.shell_id}"
     try:
         async with asyncio.timeout(timeout_seconds):
-            stdout_bytes, stderr_bytes = await completed.communicate()
+            shell = await shell_manager.wait_closed(shell.shell_id)
     except TimeoutError as exc:
-        await terminate_process(
-            completed,
-            timeout_seconds=min(float(timeout_seconds), 5.0),
-            kill_process_group=sys.platform != "win32",
-        )
+        await shell_manager.terminate(shell.shell_id, timeout_seconds=min(float(timeout_seconds), 5.0))
         raise TimeoutError(f"command timed out after {timeout_seconds}s: {cmd}") from exc
-    stdout_text = (stdout_bytes or b"").decode("utf-8", errors="replace").strip()
-    stderr_text = (stderr_bytes or b"").decode("utf-8", errors="replace").strip()
-    if _is_search_no_match(cmd, completed.returncode or 0, stderr_text):
+    stdout_text = shell.stdout.strip()
+    stderr_text = shell.stderr.strip()
+    if _is_search_no_match(cmd, shell.returncode or 0, stderr_text):
         return "(no matches)"
-    if completed.returncode != 0:
-        message = stderr_text or stdout_text or f"exit={completed.returncode}"
-        raise RuntimeError(f"exit={completed.returncode}: {message}")
+    if shell.returncode != 0:
+        message = stderr_text or stdout_text or f"exit={shell.returncode}"
+        raise RuntimeError(f"exit={shell.returncode}: {message}")
     return stdout_text or "(no output)"
+
+
+@tool(name="bash.output")
+async def bash_output(shell_id: str, offset: int = 0, limit: int | None = None) -> str:
+    """Read buffered output from a background shell, with optional offset and limit."""
+    shell = shell_manager.get(shell_id)
+    if shell.returncode is not None:
+        await shell_manager.wait_closed(shell_id)
+    output = shell.output
+    start = max(0, min(offset, len(output)))
+    end = len(output) if limit is None else min(len(output), start + max(0, limit))
+    chunk = output[start:end].rstrip()
+    exit_code = "null" if shell.returncode is None else str(shell.returncode)
+    body = chunk or "(no output)"
+    return f"id: {shell.shell_id}\nstatus: {shell.status}\nexit_code: {exit_code}\nnext_offset: {end}\noutput:\n{body}"
+
+
+@tool(name="bash.kill")
+async def kill_bash(shell_id: str) -> str:
+    """Terminate a background shell process."""
+    shell = shell_manager.get(shell_id)
+    if shell.returncode is None:
+        shell = await shell_manager.terminate(shell_id)
+    else:
+        await shell_manager.wait_closed(shell_id)
+    return f"id: {shell.shell_id}\nstatus: {shell.status}\nexit_code: {shell.returncode}"
 
 
 @tool(context=True, name="fs.read")
@@ -209,6 +226,10 @@ def fs_edit(path: str, old: str, new: str, start: int = 0, *, context: ToolConte
 def skill_describe(name: str, *, context: ToolContext) -> str:
     """Load the skill content by name. Return the location and skill content."""
     from bub.utils import workspace_from_state
+
+    allowed_skills = context.state.get("allowed_skills")
+    if allowed_skills is not None and name.casefold() not in allowed_skills:
+        return f"(skill '{name}' is not allowed in this context)"
 
     workspace = workspace_from_state(context.state)
     skill_index = {skill.name.casefold(): skill for skill in discover_skills(workspace)}
@@ -293,13 +314,17 @@ async def run_subagent(param: SubAgentInput, *, context: ToolContext) -> str:
         subagent_session = f"temp/{uuid.uuid4().hex[:8]}"
     else:
         subagent_session = param.session
+    if param.allowed_tools is None:
+        allowed_tools: list[str] | None = sorted(name for name in REGISTRY if name != "subagent")
+    else:
+        allowed_tools = [name for name in param.allowed_tools if name != "subagent"]
     state = {**context.state, "session_id": subagent_session}
     return await agent.run(
         session_id=subagent_session,
         prompt=param.prompt,
         state=state,
         model=param.model,
-        allowed_tools=param.allowed_tools,
+        allowed_tools=allowed_tools,
         allowed_skills=param.allowed_skills,
     )
 
@@ -337,6 +362,9 @@ def show_help() -> str:
         "  ,fs.read path=README.md\n"
         "  ,fs.write path=tmp.txt content='hello'\n"
         "  ,fs.edit path=tmp.txt old=hello new=world\n"
+        "  ,bash cmd='sleep 5' background=true\n"
+        "  ,bash.output shell_id=bash-12345678\n"
+        "  ,bash.kill shell_id=bash-12345678\n"
         "Any unknown command after ',' is executed as shell via bash."
     )
 

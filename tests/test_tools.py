@@ -214,13 +214,13 @@ def test_is_search_no_match_recognizes_search_commands(cmd: str, expected: bool)
 async def test_builtin_bash_cleans_up_subprocess_on_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
     from bub.builtin import tools as builtin_tools
 
-    calls: list[tuple[object, float, bool]] = []
+    calls: list[tuple[str, float]] = []
 
-    class FakeProcess:
+    class FakeShell:
+        shell_id = "bash-timeout"
+        stdout = ""
+        stderr = ""
         returncode = None
-
-        async def communicate(self):
-            return b"", b""
 
     class FakeTimeout:
         async def __aenter__(self):
@@ -229,15 +229,19 @@ async def test_builtin_bash_cleans_up_subprocess_on_timeout(monkeypatch: pytest.
         async def __aexit__(self, exc_type, exc, tb):
             raise TimeoutError
 
-    async def fake_create_subprocess_shell(*args, **kwargs):
-        return FakeProcess()
+    async def fake_start(*, cmd: str, cwd: str | None, env: dict[str, str] | None = None):
+        return FakeShell()
 
-    async def fake_terminate_process(process, *, timeout_seconds: float, kill_process_group: bool = False) -> bool:
-        calls.append((process, timeout_seconds, kill_process_group))
-        return False
+    async def fake_wait_closed(shell_id: str):
+        return FakeShell()
 
-    monkeypatch.setattr(builtin_tools.asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
-    monkeypatch.setattr(builtin_tools, "terminate_process", fake_terminate_process)
+    async def fake_terminate(shell_id: str, *, timeout_seconds: float = 3.0):
+        calls.append((shell_id, timeout_seconds))
+        return FakeShell()
+
+    monkeypatch.setattr(builtin_tools.shell_manager, "start", fake_start)
+    monkeypatch.setattr(builtin_tools.shell_manager, "wait_closed", fake_wait_closed)
+    monkeypatch.setattr(builtin_tools.shell_manager, "terminate", fake_terminate)
     monkeypatch.setattr(builtin_tools.asyncio, "timeout", lambda _seconds: FakeTimeout())
     monkeypatch.setattr(builtin_tools, "_subprocess_env", lambda: {})
 
@@ -249,24 +253,27 @@ async def test_builtin_bash_cleans_up_subprocess_on_timeout(monkeypatch: pytest.
         )
 
     assert len(calls) == 1
-    assert calls[0][1] == 1.0
-    assert calls[0][2] is (builtin_tools.sys.platform != "win32")
+    assert calls[0] == ("bash-timeout", 1.0)
 
 
 @pytest.mark.asyncio
 async def test_builtin_bash_returns_no_matches_for_rg_exit_one(monkeypatch: pytest.MonkeyPatch) -> None:
     from bub.builtin import tools as builtin_tools
 
-    class FakeProcess:
+    class FakeShell:
+        shell_id = "bash-no-match"
+        stdout = ""
+        stderr = ""
         returncode = 1
 
-        async def communicate(self):
-            return b"", b""
+    async def fake_start(*, cmd: str, cwd: str | None, env: dict[str, str] | None = None):
+        return FakeShell()
 
-    async def fake_create_subprocess_shell(*args, **kwargs):
-        return FakeProcess()
+    async def fake_wait_closed(shell_id: str):
+        return FakeShell()
 
-    monkeypatch.setattr(builtin_tools.asyncio, "create_subprocess_shell", fake_create_subprocess_shell)
+    monkeypatch.setattr(builtin_tools.shell_manager, "start", fake_start)
+    monkeypatch.setattr(builtin_tools.shell_manager, "wait_closed", fake_wait_closed)
     monkeypatch.setattr(builtin_tools, "_subprocess_env", lambda: {})
 
     result = await cast(Tool, builtin_tools.bash).run(

@@ -19,6 +19,7 @@ class AgentSettings(BaseSettings):
     home: pathlib.Path = Field(default=DEFAULT_HOME)
 
     model: str = DEFAULT_MODEL
+    fallback_model: str | None = None
     api_mode: ApiMode = "auto"
     api_key: str | None = None
     api_base: str | None = None

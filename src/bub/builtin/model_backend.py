@@ -21,6 +21,7 @@ class RepublicModelBackend:
             settings.model,
             api_key=settings.api_key,
             api_base=settings.api_base,
+            fallback_models=[settings.fallback_model] if settings.fallback_model else None,
             api_format=_api_format_for_model(settings.model, settings.api_mode),
             tape_store=tape_store,
             context=context,

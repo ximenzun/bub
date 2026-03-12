@@ -100,6 +100,27 @@ def test_build_llm_rejects_explicit_responses_for_unsupported_provider() -> None
         _build_llm(settings, tape_store=object())  # type: ignore[arg-type]
 
 
+def test_build_llm_includes_fallback_model_when_configured(monkeypatch: pytest.MonkeyPatch) -> None:
+    captured: dict[str, object] = {}
+
+    class DummyLLM:
+        def __init__(self, model: str, **kwargs) -> None:
+            captured["model"] = model
+            captured.update(kwargs)
+
+    monkeypatch.setattr("bub.builtin.model_backend.LLM", DummyLLM)
+
+    settings = AgentSettings(
+        model="openai:gpt-4.1-mini",
+        fallback_model="openai:gpt-4.1-nano",
+        api_mode="auto",
+    )
+
+    _build_llm(settings, tape_store=object())  # type: ignore[arg-type]
+
+    assert captured["fallback_models"] == ["openai:gpt-4.1-nano"]
+
+
 def test_agent_settings_rejects_legacy_provider_modes() -> None:
     with pytest.raises(ValidationError, match="api_mode"):
         AgentSettings(model="anthropic:claude-sonnet-4-5", api_mode="anthropic")  # type: ignore[arg-type]

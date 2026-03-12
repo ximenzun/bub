@@ -56,6 +56,7 @@ class ForkTapeStore:
         return itertools.chain(parent_entries, this_entries)
 
     async def append(self, tape: str, entry: TapeEntry) -> None:
+        FileTapeStore._redact_payload(entry.payload)
         self._current.append(tape, entry)
 
     @contextlib.asynccontextmanager

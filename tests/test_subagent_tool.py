@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock
 import pytest
 
 from bub.builtin.tools import run_subagent
+from bub.tools import REGISTRY
 
 
 class FakeContext:
@@ -87,3 +88,24 @@ async def test_subagent_state_includes_subagent_session_id() -> None:
     assert state["session_id"] == call_kwargs["session_id"]
     assert state["extra"] == "val"
 
+
+@pytest.mark.asyncio
+async def test_subagent_filters_subagent_from_allowed_tools() -> None:
+    agent = FakeAgent()
+    ctx = FakeContext({"_runtime_agent": agent, "session_id": "user/abc"})
+
+    await run_subagent.run(prompt="task", allowed_tools=["bash", "subagent"], context=ctx)
+
+    call_kwargs = agent.run.call_args.kwargs
+    assert call_kwargs["allowed_tools"] == ["bash"]
+
+
+@pytest.mark.asyncio
+async def test_subagent_defaults_to_all_tools_except_subagent() -> None:
+    agent = FakeAgent()
+    ctx = FakeContext({"_runtime_agent": agent, "session_id": "user/abc"})
+
+    await run_subagent.run(prompt="task", context=ctx)
+
+    call_kwargs = agent.run.call_args.kwargs
+    assert set(call_kwargs["allowed_tools"]) == set(REGISTRY) - {"subagent"}

@@ -234,6 +234,9 @@ class Agent:
             allowed_tools = {name.casefold() for name in allowed_tools}
         if allowed_skills is not None:
             allowed_skills = {name.casefold() for name in allowed_skills}
+            tape.context.state["allowed_skills"] = sorted(allowed_skills)
+        else:
+            tape.context.state.pop("allowed_skills", None)
         tools = (
             [tool for tool in REGISTRY.values() if tool.name.casefold() in allowed_tools]
             if allowed_tools is not None
