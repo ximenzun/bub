@@ -3,11 +3,13 @@ from __future__ import annotations
 import asyncio
 import shlex
 import sys
+from types import SimpleNamespace
 
 import pytest
 from republic import ToolContext
 
-from bub.builtin.tools import bash, bash_output, kill_bash
+from bub.builtin.tools import bash, bash_output, kill_bash, show_commands
+from bub.commands import SlashCommandSpec
 
 
 def _tool_context(tmp_path) -> ToolContext:
@@ -73,3 +75,49 @@ async def test_kill_bash_returns_status_when_process_already_finished(tmp_path) 
     result = await kill_bash.run(shell_id=shell_id)
 
     assert result == f"id: {shell_id}\nstatus: exited\nexit_code: 0"
+
+
+@pytest.mark.asyncio
+async def test_show_commands_renders_registered_slash_commands(tmp_path) -> None:
+    framework = SimpleNamespace(
+        get_slash_commands=lambda: [
+            SlashCommandSpec(name="/repo", summary="Repo management", usage=("/repo list",), examples=("/repo list",))
+        ]
+    )
+    agent = SimpleNamespace(framework=framework)
+    context = ToolContext(
+        tape="test-tape",
+        run_id="test-run",
+        state={"_runtime_workspace": str(tmp_path), "_runtime_agent": agent},
+    )
+
+    result = await show_commands.run(context=context)
+
+    assert "Available slash commands:" in result
+    assert "- /repo: Repo management" in result
+
+
+@pytest.mark.asyncio
+async def test_show_commands_renders_topic_detail(tmp_path) -> None:
+    framework = SimpleNamespace(
+        get_slash_commands=lambda: [
+            SlashCommandSpec(
+                name="/repo",
+                summary="Repo management",
+                usage=("/repo list", "/repo bind demo"),
+                examples=("/repo list",),
+            )
+        ]
+    )
+    agent = SimpleNamespace(framework=framework)
+    context = ToolContext(
+        tape="test-tape",
+        run_id="test-run",
+        state={"_runtime_workspace": str(tmp_path), "_runtime_agent": agent},
+    )
+
+    result = await show_commands.run(topic="repo", context=context)
+
+    assert result.startswith("/repo: Repo management")
+    assert "Usage:" in result
+    assert "Send `/commands` to see all available commands." in result

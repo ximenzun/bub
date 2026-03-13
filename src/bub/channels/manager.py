@@ -1,6 +1,8 @@
 import asyncio
 import contextlib
+import json
 from collections.abc import Collection
+from typing import Any
 
 from loguru import logger
 from pydantic import Field
@@ -11,6 +13,7 @@ from bub.channels.handler import BufferedMessageHandler
 from bub.channels.message import ChannelMessage
 from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
+from bub.social import OutboundAction
 from bub.types import Envelope, MessageHandler
 from bub.utils import wait_until_stopped
 
@@ -72,6 +75,16 @@ class ChannelManager:
         return self._channels.get(name)
 
     async def dispatch(self, message: Envelope) -> bool:
+        if isinstance(message, OutboundAction):
+            outbound = _channel_message_from_action(message)
+            if outbound is None:
+                return False
+            channel = self.get_channel(outbound.channel)
+            if channel is None:
+                return False
+            await channel.send(outbound)
+            return True
+
         channel_name = field_of(message, "output_channel", field_of(message, "channel"))
         if channel_name is None:
             return False
@@ -135,3 +148,109 @@ class ChannelManager:
         logger.info(f"channel.manager cancelled {count} in-flight tasks")
         for channel in self.enabled_channels():
             await channel.stop()
+
+
+def _channel_message_from_action(action: OutboundAction) -> ChannelMessage | None:
+    conversation = action.conversation
+    if conversation is None:
+        return None
+    channel_key = conversation.channel_key
+    if channel_key == "telegram":
+        return _telegram_message_from_action(action)
+    if channel_key == "lark":
+        return _lark_message_from_action(action)
+    if channel_key.startswith("wecom"):
+        return _wecom_message_from_action(action)
+
+    return ChannelMessage(
+        session_id=f"{channel_key}:{conversation.chat_id}",
+        channel=channel_key,
+        chat_id=conversation.chat_id,
+        content=action.text or "",
+        context=_base_context(action),
+    )
+
+
+def _attachment_source(action: OutboundAction) -> str | None:
+    if not action.attachments:
+        return None
+    attachment = action.attachments[0]
+    if attachment.url:
+        return attachment.url
+    path = attachment.metadata.get("path")
+    if path is None:
+        return None
+    return str(path)
+
+
+def _base_context(action: OutboundAction) -> dict[str, Any]:
+    conversation = action.conversation
+    if conversation is None:
+        raise ValueError("outbound action requires conversation context")
+    context: dict[str, Any] = {}
+    reply_to_message_id = action.reply_to_message_id or (
+        action.reply_grant.reply_to_message_id if action.reply_grant is not None else None
+    )
+    if reply_to_message_id is not None:
+        context["reply_to_message_id"] = reply_to_message_id
+    if action.message_id is not None:
+        context["message_id"] = action.message_id
+    if conversation.thread_id is not None:
+        context["thread_id"] = conversation.thread_id
+    if conversation.account_id != "default":
+        context["account_id"] = conversation.account_id
+    return context
+
+
+def _telegram_message_from_action(action: OutboundAction) -> ChannelMessage:
+    conversation = action.conversation
+    if conversation is None:
+        raise ValueError("telegram outbound action requires conversation context")
+    context = _base_context(action)
+    context["telegram_kind"] = action.kind
+    if action.live_surface is not None and action.live_surface.surface_id is not None:
+        context["surface_id"] = action.live_surface.surface_id
+    if action.live_surface is not None and action.live_surface.parent_message_id is not None:
+        context.setdefault("message_id", action.live_surface.parent_message_id)
+    return ChannelMessage(
+        session_id=f"{conversation.channel_key}:{conversation.chat_id}",
+        channel=conversation.channel_key,
+        chat_id=conversation.chat_id,
+        content=action.text or "",
+        context=context,
+    )
+
+
+def _lark_message_from_action(action: OutboundAction) -> ChannelMessage:
+    conversation = action.conversation
+    if conversation is None:
+        raise ValueError("lark outbound action requires conversation context")
+    context = _base_context(action)
+    context["lark_kind"] = action.kind
+    if action.content_type != "text":
+        context["content_type"] = action.content_type
+    if action.card is not None:
+        context["card"] = action.card
+    attachment_source = _attachment_source(action)
+    if attachment_source is not None:
+        context["attachment"] = attachment_source
+    return ChannelMessage(
+        session_id=f"{conversation.channel_key}:{conversation.chat_id}",
+        channel=conversation.channel_key,
+        chat_id=conversation.chat_id,
+        content=action.text or "",
+        context=context,
+    )
+
+
+def _wecom_message_from_action(action: OutboundAction) -> ChannelMessage:
+    conversation = action.conversation
+    if conversation is None:
+        raise ValueError("wecom outbound action requires conversation context")
+    return ChannelMessage(
+        session_id=f"{conversation.channel_key}:{conversation.chat_id}",
+        channel=conversation.channel_key,
+        chat_id=conversation.chat_id,
+        content=json.dumps({"action": action.as_dict()}, ensure_ascii=False),
+        context=_base_context(action),
+    )

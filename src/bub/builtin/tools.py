@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field
 from republic import AsyncTapeStore, TapeQuery, ToolContext
 
 from bub.builtin.shell_manager import shell_manager
+from bub.commands import SlashCommandSpec
 from bub.skills import discover_skills
 from bub.tools import REGISTRY, tool
 
@@ -275,6 +276,7 @@ def show_help() -> str:
         "Commands use ',' at line start.\n"
         "Known internal commands:\n"
         "  ,help\n"
+        "  ,commands\n"
         "  ,skill name=foo\n"
         "  ,tape.info\n"
         "  ,tape.search query=error\n"
@@ -290,6 +292,20 @@ def show_help() -> str:
     )
 
 
+@tool(context=True, name="commands")
+def show_commands(topic: str = "", *, context: ToolContext) -> str:
+    """Show available chat slash commands and their usage."""
+    agent = _get_agent(context)
+    commands = agent.framework.get_slash_commands()
+    topic_name = topic.strip().casefold().lstrip("/")
+    if topic_name:
+        for command in commands:
+            if command.topic_key == topic_name or command.name.lstrip("/").casefold() == topic_name:
+                return _render_slash_command_detail(command)
+        return f"(no such slash command: {topic_name})\n\n{_render_slash_command_index(commands)}"
+    return _render_slash_command_index(commands)
+
+
 def _resolve_path(context: ToolContext, raw_path: str) -> Path:
     workspace = context.state.get("_runtime_workspace")
     path = Path(raw_path).expanduser()
@@ -301,3 +317,48 @@ def _resolve_path(context: ToolContext, raw_path: str) -> Path:
         raise TypeError("runtime workspace must be a filesystem path")
     workspace_path = Path(workspace)
     return (workspace_path / path).resolve()
+
+
+def _render_slash_command_index(commands: list[SlashCommandSpec]) -> str:
+    if not commands:
+        return "(no slash commands registered)"
+    lines = [
+        "Available slash commands:",
+        "",
+        "Use `/commands <topic>` or send `/<topic>` to view command-specific help.",
+    ]
+    for command in commands:
+        lines.append(f"- {command.name}: {command.summary}")
+    examples = _collect_slash_examples(commands)
+    if examples:
+        lines.append("")
+        lines.append("Quick examples:")
+        lines.extend(f"- {example}" for example in examples)
+    return "\n".join(lines)
+
+
+def _render_slash_command_detail(command: SlashCommandSpec) -> str:
+    lines = [f"{command.name}: {command.summary}"]
+    if command.usage:
+        lines.append("")
+        lines.append("Usage:")
+        lines.extend(f"- {item}" for item in command.usage)
+    if command.examples:
+        lines.append("")
+        lines.append("Examples:")
+        lines.extend(f"- {item}" for item in command.examples)
+    lines.append("")
+    lines.append("Send `/commands` to see all available commands.")
+    return "\n".join(lines)
+
+
+def _collect_slash_examples(commands: list[SlashCommandSpec], limit: int = 4) -> list[str]:
+    examples: list[str] = []
+    for command in commands:
+        if command.examples:
+            examples.extend(command.examples)
+        elif command.usage:
+            examples.append(command.usage[0])
+        if len(examples) >= limit:
+            break
+    return examples[:limit]

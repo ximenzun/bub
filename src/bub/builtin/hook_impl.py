@@ -137,8 +137,13 @@ class BuiltinImpl:
         from bub.channels.cli import CliChannel
         from bub.channels.telegram import TelegramChannel
 
+        slash_commands = [(command.name, command.summary) for command in self.framework.get_slash_commands()]
+        try:
+            telegram = TelegramChannel(on_receive=message_handler, slash_commands=slash_commands)
+        except TypeError:
+            telegram = TelegramChannel(on_receive=message_handler)
         return [
-            TelegramChannel(on_receive=message_handler),
+            telegram,
             CliChannel(on_receive=message_handler, agent=self.agent),
         ]
 

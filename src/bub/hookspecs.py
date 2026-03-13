@@ -12,6 +12,7 @@ from bub.types import Envelope, MessageHandler, State
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
+    from bub.commands import SlashCommandSpec
 
 BUB_HOOK_NAMESPACE = "bub"
 hookspec = pluggy.HookspecMarker(BUB_HOOK_NAMESPACE)
@@ -88,6 +89,11 @@ class BubHookSpecs:
     def provide_tape_store(self) -> TapeStore | AsyncTapeStore:
         """Provide a tape store instance for Bub's conversation recording feature."""
         ...
+
+    @hookspec
+    def provide_slash_commands(self) -> list[SlashCommandSpec]:
+        """Provide discoverable slash commands for chat channels."""
+        raise NotImplementedError
 
     @hookspec
     def provide_channels(self, message_handler: MessageHandler) -> list[Channel]:

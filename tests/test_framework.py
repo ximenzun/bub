@@ -6,6 +6,7 @@ import typer
 from typer.testing import CliRunner
 
 from bub.channels.base import Channel
+from bub.commands import SlashCommandSpec
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
 
@@ -110,3 +111,27 @@ def test_builtin_cli_exposes_login_and_keeps_message_hidden_alias() -> None:
     assert alias_result.exit_code == 0
     assert "bub message" in alias_result.stdout
     assert "Start message listeners" in alias_result.stdout
+
+
+def test_get_slash_commands_prefers_high_priority_plugin_for_duplicate_names() -> None:
+    framework = BubFramework()
+    low = SlashCommandSpec(name="/repo", summary="low")
+    high = SlashCommandSpec(name="/repo", summary="high")
+    git = SlashCommandSpec(name="/git", summary="git")
+
+    class LowPriorityPlugin:
+        @hookimpl
+        def provide_slash_commands(self):
+            return [low]
+
+    class HighPriorityPlugin:
+        @hookimpl
+        def provide_slash_commands(self):
+            return [high, git]
+
+    framework._plugin_manager.register(LowPriorityPlugin(), name="low")
+    framework._plugin_manager.register(HighPriorityPlugin(), name="high")
+
+    commands = framework.get_slash_commands()
+
+    assert commands == [git, high]

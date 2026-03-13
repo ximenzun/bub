@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from pathlib import Path
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
 
@@ -12,6 +13,7 @@ from bub.channels.handler import BufferedMessageHandler
 from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel, TelegramMessageParser
+from bub.social import ConversationRef, LiveSurfaceRef, OutboundAction, ReplyGrant
 
 
 class FakeChannel:
@@ -111,6 +113,32 @@ async def test_channel_manager_dispatch_uses_output_channel_and_preserves_metada
     assert outbound.content == "hello"
     assert outbound.kind == "command"
     assert outbound.context["source"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_dispatch_converts_outbound_action_for_telegram() -> None:
+    telegram = FakeChannel("telegram")
+    manager = ChannelManager(FakeFramework({"telegram": telegram}), enabled_channels=["telegram"])
+
+    result = await manager.dispatch(
+        OutboundAction(
+            kind="set_draft",
+            conversation=ConversationRef(platform="telegram", chat_id="room", thread_id="12"),
+            text="working",
+            live_surface=LiveSurfaceRef(mode="text_draft", surface_id="77", parent_message_id="42"),
+            reply_grant=ReplyGrant(mode="message_id", reply_to_message_id="42"),
+        )
+    )
+
+    assert result is True
+    assert len(telegram.sent) == 1
+    outbound = telegram.sent[0]
+    assert outbound.channel == "telegram"
+    assert outbound.chat_id == "room"
+    assert outbound.content == "working"
+    assert outbound.context["telegram_kind"] == "set_draft"
+    assert outbound.context["surface_id"] == "77"
+    assert outbound.context["reply_to_message_id"] == "42"
 
 
 def test_channel_manager_enabled_channels_excludes_cli_from_all() -> None:
@@ -253,6 +281,83 @@ async def test_telegram_channel_send_extracts_json_message_and_skips_blank() -> 
     await channel.send(_message("   ", chat_id="42"))
 
     assert sent == [("42", "hello")]
+
+
+@pytest.mark.asyncio
+async def test_telegram_channel_send_supports_reply_edit_draft_and_presence() -> None:
+    channel = TelegramChannel(lambda message: None, slash_commands=[("/repo", "Repo help")])
+    events: list[tuple[str, Any]] = []
+
+    async def send_message(chat_id: str, text: str, **kwargs: Any) -> None:
+        events.append(("send", (chat_id, text, kwargs)))
+
+    async def edit_message_text(chat_id: str, message_id: int, text: str) -> None:
+        events.append(("edit", (chat_id, message_id, text)))
+
+    async def send_message_draft(chat_id: str, draft_id: int, text: str, message_thread_id: int | None = None) -> None:
+        events.append(("draft", (chat_id, draft_id, text, message_thread_id)))
+
+    async def send_chat_action(chat_id: str, action: str) -> None:
+        events.append(("presence", (chat_id, action)))
+
+    async def set_my_commands(commands: list[Any]) -> None:
+        events.append(("commands", commands))
+
+    channel._app = SimpleNamespace(
+        bot=SimpleNamespace(
+            send_message=send_message,
+            edit_message_text=edit_message_text,
+            send_message_draft=send_message_draft,
+            send_chat_action=send_chat_action,
+            set_my_commands=set_my_commands,
+        )
+    )
+
+    await channel._set_registered_commands()
+    await channel.send(_message("hello", chat_id="42", kind="normal"))
+    await channel.send(
+        ChannelMessage(
+            session_id="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            content="reply",
+            context={"telegram_kind": "reply_message", "reply_to_message_id": "9"},
+        )
+    )
+    await channel.send(
+        ChannelMessage(
+            session_id="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            content="updated",
+            context={"telegram_kind": "edit_message", "message_id": "11"},
+        )
+    )
+    await channel.send(
+        ChannelMessage(
+            session_id="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            content="working",
+            context={"telegram_kind": "set_draft", "surface_id": "77", "thread_id": "15"},
+        )
+    )
+    await channel.send(
+        ChannelMessage(
+            session_id="telegram:42",
+            channel="telegram",
+            chat_id="42",
+            content="",
+            context={"telegram_kind": "presence"},
+        )
+    )
+
+    assert events[0][0] == "commands"
+    assert events[1] == ("send", ("42", "hello", {}))
+    assert events[2] == ("send", ("42", "reply", {"reply_to_message_id": 9}))
+    assert events[3] == ("edit", ("42", 11, "updated"))
+    assert events[4] == ("draft", ("42", 77, "working", 15))
+    assert events[5] == ("presence", ("42", "typing"))
 
 
 @pytest.mark.asyncio

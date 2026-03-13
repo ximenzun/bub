@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
+import hashlib
 import json
 from collections.abc import AsyncGenerator, Callable
 from typing import Any, ClassVar
@@ -9,7 +10,8 @@ from typing import Any, ClassVar
 from loguru import logger
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
-from telegram import Bot, Message, Update
+from telegram import Bot, BotCommand, Message, Update
+from telegram.error import TelegramError
 from telegram.ext import Application, CommandHandler, ContextTypes, filters
 from telegram.ext import MessageHandler as TelegramMessageHandler
 
@@ -145,13 +147,14 @@ class TelegramChannel(Channel):
     name = "telegram"
     _app: Application
 
-    def __init__(self, on_receive: MessageHandler) -> None:
+    def __init__(self, on_receive: MessageHandler, *, slash_commands: list[tuple[str, str]] | None = None) -> None:
         self._on_receive = on_receive
         self._settings = TelegramSettings()
         self._allow_users = {uid.strip() for uid in (self._settings.allow_users or "").split(",") if uid.strip()}
         self._allow_chats = {cid.strip() for cid in (self._settings.allow_chats or "").split(",") if cid.strip()}
         self._parser = TelegramMessageParser(bot_getter=lambda: self._app.bot)
         self._typing_tasks: dict[str, asyncio.Task] = {}
+        self._slash_commands = slash_commands or []
 
     @property
     def needs_debounce(self) -> bool:
@@ -174,6 +177,7 @@ class TelegramChannel(Channel):
         self._app.add_handler(TelegramMessageHandler(~filters.COMMAND, self._on_message, block=False))
         await self._app.initialize()
         await self._app.start()
+        await self._set_registered_commands()
         updater = self._app.updater
         if updater is None:
             return
@@ -194,17 +198,67 @@ class TelegramChannel(Channel):
         self._typing_tasks.clear()
         logger.info("telegram.stopped")
 
+    async def _set_registered_commands(self) -> None:
+        commands = _telegram_bot_commands(self._slash_commands)
+        if not commands:
+            return
+        with contextlib.suppress(Exception):
+            await self._app.bot.set_my_commands(commands)
+
     async def send(self, message: ChannelMessage) -> None:
+        kind = _telegram_kind(message)
         chat_id = message.chat_id
-        content = message.content
-        try:
-            data = json.loads(content)
-            text = data.get("message", "")
-        except json.JSONDecodeError:
-            text = content
+        match kind:
+            case "send_message" | "reply_message":
+                await self._send_message(chat_id, message)
+            case "edit_message":
+                await self._edit_message(chat_id, message)
+            case "set_draft":
+                await self._set_draft(chat_id, message)
+            case "presence":
+                await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
+            case _:
+                logger.warning("telegram.send unsupported message kind={}", kind)
+
+    async def _send_message(self, chat_id: str, message: ChannelMessage) -> None:
+        text = _message_text(message)
         if not text.strip():
             return
-        await self._app.bot.send_message(chat_id=chat_id, text=text)
+        kwargs: dict[str, Any] = {}
+        reply_to = _reply_to_message_id(message)
+        if reply_to is not None:
+            with contextlib.suppress(ValueError):
+                kwargs["reply_to_message_id"] = int(reply_to)
+        message_thread_id = _message_thread_id(message)
+        if message_thread_id is not None:
+            kwargs["message_thread_id"] = message_thread_id
+        await self._app.bot.send_message(chat_id=chat_id, text=text, **kwargs)
+
+    async def _edit_message(self, chat_id: str, message: ChannelMessage) -> None:
+        text = _message_text(message)
+        message_id = _target_message_id(message)
+        if not text.strip() or message_id is None:
+            return
+        await self._app.bot.edit_message_text(chat_id=chat_id, message_id=message_id, text=text)
+
+    async def _set_draft(self, chat_id: str, message: ChannelMessage) -> None:
+        text = _message_text(message)
+        if not text.strip():
+            return
+        draft_sender = getattr(self._app.bot, "send_message_draft", None)
+        if draft_sender is None:
+            await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
+            return
+        try:
+            await draft_sender(
+                chat_id=chat_id,
+                draft_id=_draft_id(message),
+                text=text,
+                message_thread_id=_message_thread_id(message),
+            )
+        except TelegramError as exc:
+            logger.warning("telegram.send draft_fallback chat_id={} error={}", chat_id, exc)
+            await self._app.bot.send_chat_action(chat_id=chat_id, action="typing")
 
     async def _on_start(self, update: Update, _context: ContextTypes.DEFAULT_TYPE) -> None:
         if update.message is None:
@@ -480,3 +534,90 @@ class TelegramMessageParser:
             "data_fetcher": lambda: self._download_media(video_note.file_id, video_note.file_size),
         })
         return f"[Video note: {duration}s]", metadata
+
+
+def _telegram_bot_commands(slash_commands: list[tuple[str, str]]) -> list[BotCommand]:
+    commands: list[BotCommand] = []
+    for name, summary in slash_commands:
+        command = name.lstrip("/").strip()
+        if not command:
+            continue
+        commands.append(BotCommand(command=command, description=summary[:256]))
+    return commands
+
+
+def _telegram_kind(message: ChannelMessage) -> str:
+    raw = message.context.get("telegram_kind")
+    if isinstance(raw, str) and raw in {"send_message", "reply_message", "edit_message", "set_draft", "presence"}:
+        return raw
+    if _reply_to_message_id(message) is not None:
+        return "reply_message"
+    return "send_message"
+
+
+def _message_text(message: ChannelMessage) -> str:
+    content = message.content
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return content
+    if isinstance(payload, dict):
+        value = payload.get("message")
+        if isinstance(value, str):
+            return value
+    return content
+
+
+def _reply_to_message_id(message: ChannelMessage) -> str | None:
+    reply_to = message.context.get("reply_to_message_id")
+    if isinstance(reply_to, str) and reply_to.strip():
+        return reply_to
+    if message.reply_grant is not None and getattr(message.reply_grant, "reply_to_message_id", None):
+        return str(message.reply_grant.reply_to_message_id)
+    return None
+
+
+def _target_message_id(message: ChannelMessage) -> int | None:
+    for candidate in (message.context.get("message_id"), message.message_id, _reply_to_message_id(message)):
+        if candidate is None:
+            continue
+        with contextlib.suppress(ValueError, TypeError):
+            return int(candidate)
+    return None
+
+
+def _message_thread_id(message: ChannelMessage) -> int | None:
+    for candidate in (
+        message.context.get("message_thread_id"),
+        message.context.get("thread_id"),
+        getattr(message.reply_grant, "thread_id", None),
+        getattr(message.conversation, "thread_id", None),
+    ):
+        if candidate is None:
+            continue
+        with contextlib.suppress(ValueError, TypeError):
+            return int(candidate)
+    return None
+
+
+def _draft_id(message: ChannelMessage) -> int:
+    surface_id = message.context.get("surface_id")
+    if isinstance(surface_id, str) and surface_id.strip():
+        with contextlib.suppress(ValueError):
+            draft_id = int(surface_id)
+            if draft_id != 0:
+                return draft_id
+    for candidate in (_reply_to_message_id(message), message.message_id, message.context.get("message_id")):
+        if candidate is None:
+            continue
+        with contextlib.suppress(ValueError, TypeError):
+            numeric = int(candidate)
+            if numeric != 0:
+                return numeric
+    seed = (
+        surface_id
+        if isinstance(surface_id, str) and surface_id.strip()
+        else f"{message.chat_id}:{message.context.get('thread_id', 'text_draft')}"
+    )
+    digest = hashlib.md5(seed.encode("utf-8"), usedforsecurity=False).digest()
+    return int.from_bytes(digest[:4], "big") % 2_147_483_646 + 1
