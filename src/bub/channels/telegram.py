@@ -285,14 +285,22 @@ class TelegramChannel(Channel):
 
     async def _build_message(self, message: Message) -> ChannelMessage:
         chat_id = str(message.chat_id)
-        session_id = f"{self.name}:{chat_id}"
+        thread_id = _telegram_inbound_thread_id(message)
+        session_id = _telegram_session_id(chat_id, thread_id=thread_id)
         content, metadata = await self._parser.parse(message)
         if content.startswith("/bub "):
             content = content[5:]
 
         # Pass comma commands directly to the input handler
         if content.strip().startswith(","):
-            return ChannelMessage(session_id=session_id, content=content.strip(), channel=self.name, chat_id=chat_id)
+            return ChannelMessage(
+                session_id=session_id,
+                content=content.strip(),
+                channel=self.name,
+                chat_id=chat_id,
+                output_channel=self.name,
+                context=_telegram_inbound_context(message, thread_id=thread_id),
+            )
 
         media_items = _extract_media_items(metadata)
         reply_meta = await self._parser.get_reply(message)
@@ -310,7 +318,9 @@ class TelegramChannel(Channel):
             media=media_items,
             is_active=is_active,
             lifespan=self.start_typing(chat_id),
-            output_channel="null",  # disable outbound for telegram messages
+            output_channel=self.name,
+            context=_telegram_inbound_context(message, thread_id=thread_id),
+            message_id=str(message.message_id) if getattr(message, "message_id", None) is not None else None,
         )
 
     @contextlib.asynccontextmanager
@@ -621,3 +631,35 @@ def _draft_id(message: ChannelMessage) -> int:
     )
     digest = hashlib.md5(seed.encode("utf-8"), usedforsecurity=False).digest()
     return int.from_bytes(digest[:4], "big") % 2_147_483_646 + 1
+
+
+def _telegram_session_id(chat_id: str, *, thread_id: str | None) -> str:
+    suffix = thread_id or "main"
+    return f"telegram:{chat_id}:{suffix}"
+
+
+def _telegram_inbound_context(message: Message, *, thread_id: str | None) -> dict[str, object]:
+    context: dict[str, object] = {}
+    chat = getattr(message, "chat", None)
+    chat_type = getattr(chat, "type", None)
+    if isinstance(chat_type, str) and chat_type.strip():
+        context["surface"] = chat_type
+    message_id = getattr(message, "message_id", None)
+    if message_id is not None:
+        context["message_id"] = str(message_id)
+        context["reply_to_message_id"] = str(message_id)
+    if thread_id is not None:
+        context["thread_id"] = thread_id
+        context["message_thread_id"] = thread_id
+    from_user = getattr(message, "from_user", None)
+    if from_user is not None:
+        context["actor_id"] = str(from_user.id)
+    return context
+
+
+def _telegram_inbound_thread_id(message: Message) -> str | None:
+    candidate = getattr(message, "message_thread_id", None)
+    if candidate is None:
+        return None
+    text = str(candidate).strip()
+    return text or None

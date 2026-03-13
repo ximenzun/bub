@@ -71,6 +71,7 @@ async def test_load_state_and_save_state_manage_lifespan_and_context(tmp_path: P
         chat_id="room",
         content="hello",
         lifespan=lifespan,
+        context={"message_id": "m-1", "thread_id": "t-1", "actor_id": "user-1"},
     )
 
     state = await impl.load_state(message=message, session_id="resolved-session")
@@ -79,6 +80,11 @@ async def test_load_state_and_save_state_manage_lifespan_and_context(tmp_path: P
     assert state["session_id"] == "resolved-session"
     assert state["_runtime_agent"] is impl.agent
     assert state["context"] == message.context_str
+    assert state["_inbound_channel"] == "cli"
+    assert state["_inbound_chat_id"] == "room"
+    assert state["_inbound_message_id"] == "m-1"
+    assert state["_inbound_thread_id"] == "t-1"
+    assert state["_inbound_actor_id"] == "user-1"
 
     try:
         _raise_value_error()
@@ -214,9 +220,21 @@ async def test_dispatch_outbound_uses_framework_router(tmp_path: Path) -> None:
 
 def test_render_outbound_preserves_message_metadata(tmp_path: Path) -> None:
     _, impl, _ = _build_impl(tmp_path)
+    reply_token = "-".join(["reply", "grant", "1"])
 
     rendered = impl.render_outbound(
-        message={"channel": "telegram", "chat_id": "room", "kind": "command", "output_channel": "cli"},
+        message={
+            "channel": "telegram",
+            "chat_id": "room",
+            "kind": "command",
+            "output_channel": "cli",
+            "context": {
+                "message_id": "77",
+                "thread_id": "15",
+                "account_id": "acct-1",
+                "wecom_reply_token": reply_token,
+            },
+        },
         session_id="session",
         state={},
         model_output="result",
@@ -225,11 +243,15 @@ def test_render_outbound_preserves_message_metadata(tmp_path: Path) -> None:
     assert len(rendered) == 1
     outbound = rendered[0]
     assert outbound.session_id == "session"
-    assert outbound.channel == "telegram"
+    assert outbound.channel == "cli"
     assert outbound.chat_id == "room"
     assert outbound.output_channel == "cli"
     assert outbound.kind == "command"
     assert outbound.content == "result"
+    assert outbound.account_id == "acct-1"
+    assert outbound.context["reply_to_message_id"] == "77"
+    assert outbound.context["thread_id"] == "15"
+    assert outbound.context["wecom_reply_token"] == reply_token
 
 
 def test_provide_tape_store_uses_agent_home_directory(tmp_path: Path) -> None:
