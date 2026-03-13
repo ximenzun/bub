@@ -116,6 +116,26 @@ async def test_channel_manager_dispatch_uses_output_channel_and_preserves_metada
 
 
 @pytest.mark.asyncio
+async def test_channel_manager_dispatch_preserves_channel_message_context_and_account_id() -> None:
+    telegram = FakeChannel("telegram")
+    manager = ChannelManager(FakeFramework({"telegram": telegram}), enabled_channels=["telegram"])
+    outbound = ChannelMessage(
+        session_id="telegram:room:15",
+        channel="telegram",
+        chat_id="room",
+        content="hello",
+        account_id="acct-1",
+        output_channel="telegram",
+        context={"reply_to_message_id": "42", "thread_id": "15"},
+    )
+
+    result = await manager.dispatch(outbound)
+
+    assert result is True
+    assert telegram.sent == [outbound]
+
+
+@pytest.mark.asyncio
 async def test_channel_manager_dispatch_converts_outbound_action_for_telegram() -> None:
     telegram = FakeChannel("telegram")
     manager = ChannelManager(FakeFramework({"telegram": telegram}), enabled_channels=["telegram"])
@@ -365,7 +385,7 @@ async def test_telegram_channel_build_message_returns_command_directly() -> None
     channel = TelegramChannel(lambda message: None)
     channel._parser = SimpleNamespace(parse=_async_return((",help", {"type": "text"})), get_reply=_async_return(None))
 
-    message = SimpleNamespace(chat_id=42)
+    message = SimpleNamespace(chat_id=42, message_id=9, chat=SimpleNamespace(type="private"), from_user=None)
 
     result = await channel._build_message(message)
 
@@ -373,10 +393,11 @@ async def test_telegram_channel_build_message_returns_command_directly() -> None
     assert result.chat_id == "42"
     assert result.content == ",help"
     assert result.output_channel == "telegram"
+    assert result.context["reply_to_message_id"] == "9"
 
 
 @pytest.mark.asyncio
-async def test_telegram_channel_build_message_wraps_payload_and_disables_outbound(
+async def test_telegram_channel_build_message_wraps_payload_and_enables_native_outbound(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     channel = TelegramChannel(lambda message: None)
@@ -387,15 +408,25 @@ async def test_telegram_channel_build_message_wraps_payload_and_disables_outboun
     channel._parser = parser
     monkeypatch.setattr("bub.channels.telegram.MESSAGE_FILTER.filter", lambda message: True)
 
-    message = SimpleNamespace(chat_id=42)
+    message = SimpleNamespace(
+        chat_id=42,
+        message_id=11,
+        chat=SimpleNamespace(type="group"),
+        from_user=SimpleNamespace(id=7),
+        message_thread_id=15,
+    )
 
     result = await channel._build_message(message)
 
-    assert result.output_channel == "null"
+    assert result.output_channel == "telegram"
+    assert result.session_id == "telegram:42:15"
     assert result.is_active is True
     assert '"message": "hello"' in result.content
     assert '"reply_to_message"' in result.content
     assert result.lifespan is not None
+    assert result.context["reply_to_message_id"] == "11"
+    assert result.context["thread_id"] == "15"
+    assert result.context["actor_id"] == "7"
 
 
 @pytest.mark.asyncio

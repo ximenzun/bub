@@ -2,6 +2,7 @@ import asyncio
 import contextlib
 import json
 from collections.abc import Collection
+from dataclasses import replace
 from typing import Any
 
 from loguru import logger
@@ -82,6 +83,19 @@ class ChannelManager:
             channel = self.get_channel(outbound.channel)
             if channel is None:
                 return False
+            await channel.send(outbound)
+            return True
+
+        if isinstance(message, ChannelMessage):
+            channel_name = message.output_channel or message.channel
+            channel = self.get_channel(channel_name)
+            if channel is None:
+                return False
+            outbound = (
+                message
+                if message.channel == channel_name and message.output_channel == channel_name
+                else replace(message, channel=channel_name, output_channel=channel_name)
+            )
             await channel.send(outbound)
             return True
 
