@@ -10,6 +10,13 @@ from typing import Any, cast
 from pydantic.dataclasses import dataclass
 from republic import LLM, AsyncTapeStore, Tape, TapeEntry, TapeQuery
 
+from bub.builtin.context import (
+    DEFAULT_TAPE_VIEW,
+    TapeView,
+    build_tape_context,
+    default_tape_context,
+    restore_tape_state,
+)
 from bub.builtin.store import ForkTapeStore
 
 
@@ -31,6 +38,18 @@ class AnchorSummary:
 
     name: str
     state: dict[str, object]
+    date: str
+
+
+@dataclass(frozen=True)
+class TapeContextSnapshot:
+    """Resolved tape view plus hydrated state."""
+
+    name: str
+    view: str
+    anchor: str | None
+    state: dict[str, object]
+    messages: list[dict[str, object]]
 
 
 class TapeService:
@@ -79,8 +98,14 @@ class TapeService:
             name = str(entry.payload.get("name", "-"))
             state = entry.payload.get("state")
             state_dict: dict[str, object] = dict(state) if isinstance(state, dict) else {}
-            results.append(AnchorSummary(name=name, state=state_dict))
+            results.append(AnchorSummary(name=name, state=state_dict, date=entry.date))
         return results
+
+    async def latest_anchor(self, tape_name: str) -> AnchorSummary | None:
+        anchors = await self.anchors(tape_name, limit=1)
+        if not anchors:
+            return None
+        return anchors[-1]
 
     async def _archive(self, tape_name: str) -> Path:
         tape = self._llm.tape(tape_name)
@@ -97,7 +122,6 @@ class TapeService:
         archive_path: Path | None = None
         if archive:
             archive_path = await self._archive(tape_name)
-        await tape.reset_async()
         state = {"owner": "human"}
         if archive_path is not None:
             state["archived"] = str(archive_path)
@@ -121,7 +145,43 @@ class TapeService:
         tape_name = (
             workspace_hash + "__" + hashlib.md5(session_id.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
         )
-        return self._llm.tape(tape_name)
+        return self._llm.tape(tape_name, context=default_tape_context())
+
+    async def hydrate_context(self, tape: Tape, runtime_state: dict[str, Any] | None = None) -> AnchorSummary | None:
+        anchor = await self.latest_anchor(tape.name)
+        merged_state = restore_tape_state(
+            runtime_state,
+            anchor_name=anchor.name if anchor else None,
+            anchor_state=cast(dict[str, Any], anchor.state) if anchor else None,
+        )
+        tape.context = build_tape_context(state=merged_state)
+        return anchor
+
+    async def context_snapshot(
+        self,
+        tape_name: str,
+        *,
+        view: TapeView = DEFAULT_TAPE_VIEW,
+        runtime_state: dict[str, Any] | None = None,
+    ) -> TapeContextSnapshot:
+        anchor = await self.latest_anchor(tape_name)
+        merged_state = restore_tape_state(
+            runtime_state,
+            anchor_name=anchor.name if anchor else None,
+            anchor_state=cast(dict[str, Any], anchor.state) if anchor else None,
+            view=view,
+        )
+        read_anchor = None if view == "timeline" else build_tape_context().anchor
+        tape = self._llm.tape(tape_name, context=build_tape_context(state=merged_state, view=view, anchor=read_anchor))
+        messages = cast(list[dict[str, object]], await tape.read_messages_async())
+        visible_state = cast(dict[str, object], dict(anchor.state) if anchor else {})
+        return TapeContextSnapshot(
+            name=tape_name,
+            view=view,
+            anchor=anchor.name if anchor else None,
+            state=visible_state,
+            messages=messages,
+        )
 
     @contextlib.asynccontextmanager
     async def fork_tape(self, tape_name: str, merge_back: bool = True) -> AsyncGenerator[None, None]:

@@ -85,6 +85,9 @@ exclude = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+filterwarnings = [
+    "ignore:datetime\\.datetime\\.utcfromtimestamp\\(\\) is deprecated and scheduled for removal.*:DeprecationWarning:lark_oapi\\.ws\\.pb\\.google\\.protobuf\\.internal\\.well_known_types",
+]
 
 [tool.ruff]
 target-version = "py312"

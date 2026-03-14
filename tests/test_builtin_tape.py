@@ -1,0 +1,147 @@
+from __future__ import annotations
+
+from pathlib import Path
+from types import SimpleNamespace
+
+import pytest
+from republic import LLM, TapeEntry, ToolContext
+from republic.tape import InMemoryTapeStore
+
+from bub.builtin.context import default_tape_context
+from bub.builtin.store import ForkTapeStore
+from bub.builtin.tape import TapeService
+from bub.builtin.tools import tape_anchors, tape_context, tape_handoff, tape_search, tape_view
+
+
+def _make_tape_service(tmp_path: Path) -> tuple[TapeService, InMemoryTapeStore]:
+    parent = InMemoryTapeStore()
+    store = ForkTapeStore(parent)
+    llm = LLM("openai:gpt-4o", tape_store=store, context=default_tape_context())
+    return TapeService(llm, tmp_path, store), parent
+
+
+async def _seed_tape(service: TapeService, tmp_path: Path) -> str:
+    tape = service.session_tape("user/session", tmp_path)
+    await service.ensure_bootstrap_anchor(tape.name)
+    await service.handoff(tape.name, name="phase-1", state={"summary": "carry this forward", "owner": "agent"})
+    await tape.append_async(TapeEntry.system("system note"))
+    await tape.append_async(TapeEntry.message({"role": "user", "content": "next question"}))
+    await tape.append_async(
+        TapeEntry.tool_call(
+            [{"id": "call-1", "type": "function", "function": {"name": "echo", "arguments": "{}"}}]
+        )
+    )
+    await tape.append_async(TapeEntry.tool_result([{"status": "ok"}]))
+    return tape.name
+
+
+def _tool_context(service: TapeService, tape_name: str) -> ToolContext:
+    agent = SimpleNamespace(tapes=service)
+    return ToolContext(tape=tape_name, run_id="test-run", state={"_runtime_agent": agent})
+
+
+@pytest.mark.asyncio
+async def test_context_snapshot_active_includes_handoff_summary(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape_name = await _seed_tape(service, tmp_path)
+
+    snapshot = await service.context_snapshot(tape_name, runtime_state={"session_id": "user/session"})
+
+    assert snapshot.anchor == "phase-1"
+    assert snapshot.state == {"summary": "carry this forward", "owner": "agent"}
+    assert snapshot.messages[0]["role"] == "system"
+    assert "carry this forward" in str(snapshot.messages[0]["content"])
+    assert snapshot.messages[1] == {"role": "user", "content": "next question"}
+
+
+@pytest.mark.asyncio
+async def test_context_snapshot_timeline_renders_system_anchor_and_events(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape_name = await _seed_tape(service, tmp_path)
+
+    snapshot = await service.context_snapshot(tape_name, view="timeline")
+    rendered = "\n".join(str(message.get("content", "")) for message in snapshot.messages)
+
+    assert "[anchor] phase-1" in rendered
+    assert "[event:handoff]" in rendered
+    assert "system note" in rendered
+
+
+@pytest.mark.asyncio
+async def test_tape_search_defaults_cover_anchor_and_event_entries(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape_name = await _seed_tape(service, tmp_path)
+    context = _tool_context(service, tape_name)
+
+    result = await tape_search.run(query="carry this forward", context=context)
+
+    assert "[tape.search]:" in result
+    assert "carry this forward" in result
+    assert '"name": "phase-1"' in result
+
+
+@pytest.mark.asyncio
+async def test_tape_anchors_tool_renders_anchor_state(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape_name = await _seed_tape(service, tmp_path)
+    context = _tool_context(service, tape_name)
+
+    result = await tape_anchors.run(context=context)
+
+    assert "- phase-1 @" in result
+    assert '"summary": "carry this forward"' in result
+
+
+@pytest.mark.asyncio
+async def test_tape_view_and_context_tools_show_active_state(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape_name = await _seed_tape(service, tmp_path)
+    context = _tool_context(service, tape_name)
+
+    rendered_view = await tape_view.run(view="active", limit=10, context=context)
+    rendered_context = await tape_context.run(view="active", limit=10, context=context)
+
+    assert "view: active" in rendered_view
+    assert '"role": "system"' in rendered_view
+    assert "carry this forward" in rendered_view
+    assert "anchor_state:" in rendered_context
+    assert '"owner": "agent"' in rendered_context
+
+
+@pytest.mark.asyncio
+async def test_tape_handoff_tool_accepts_structured_state_and_updates_context(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape = service.session_tape("user/session", tmp_path)
+    await service.ensure_bootstrap_anchor(tape.name)
+    context = _tool_context(service, tape.name)
+
+    result = await tape_handoff.run(
+        name="phase-2",
+        summary="done",
+        state_json='{"owner":"agent","step":2}',
+        context=context,
+    )
+    snapshot = await service.context_snapshot(tape.name)
+
+    assert result == "anchor added: phase-2"
+    assert snapshot.anchor == "phase-2"
+    assert snapshot.state == {"owner": "agent", "step": 2, "summary": "done"}
+    assert context.state["summary"] == "done"
+
+
+@pytest.mark.asyncio
+async def test_tape_reset_keeps_history_and_starts_new_segment(tmp_path: Path) -> None:
+    service, parent = _make_tape_service(tmp_path)
+    tape_name = await _seed_tape(service, tmp_path)
+    before = parent.read(tape_name)
+
+    result = await service.reset(tape_name)
+    after = parent.read(tape_name)
+    snapshot = await service.context_snapshot(tape_name)
+
+    assert result == "ok"
+    assert before is not None
+    assert after is not None
+    assert len(after) == len(before) + 2
+    assert snapshot.anchor == "session/start"
+    assert snapshot.messages == []
