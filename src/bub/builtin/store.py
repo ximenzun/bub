@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import contextlib
 import contextvars
-import itertools
 import json
 import re
 import threading
@@ -10,7 +9,7 @@ from collections.abc import AsyncGenerator, Iterable
 from dataclasses import asdict, replace
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any, cast
+from typing import cast
 
 from loguru import logger
 from republic import AsyncTapeStore, TapeEntry, TapeQuery
@@ -45,42 +44,28 @@ class ForkTapeStore:
         await self._parent.reset(tape)
 
     async def fetch_all(self, query: TapeQuery[AsyncTapeStore]) -> Iterable[TapeEntry]:
+        entries = await self._combined_entries(query.tape)
+        store = _ListTapeStore(entries)
+        replay_query = replace(query, store=store)
+        return store.fetch_all(cast(TapeQuery, replay_query))
+
+    async def _combined_entries(self, tape: str) -> list[TapeEntry]:
+        parent_query = TapeQuery[AsyncTapeStore](tape=tape, store=self._parent)
         try:
-            parent_entries = await self._parent.fetch_all(query)
+            parent_entries = list(await self._parent.fetch_all(parent_query))
         except Exception:
             parent_entries = []
-        this_entries: list[TapeEntry] = []
+        current_entries: list[TapeEntry] = []
         if hasattr(self._current, "read"):
-            for entry in cast(list[TapeEntry], self._current.read(query.tape) or []):
-                if query._kinds and entry.kind not in query._kinds:
-                    continue
-                if entry.kind == "anchor":  # noqa: SIM102
-                    if query._after_last or (query._after_anchor and entry.payload.get("name") == query._after_anchor):
-                        this_entries.clear()
-                        parent_entries = []
-                this_entries.append(entry)
-        return itertools.chain(parent_entries, this_entries)
-
-    @staticmethod
-    def _redact_prompt(prompt: list[dict]) -> Any:
-        if not isinstance(prompt, list):
-            return prompt
-        new_prompt = []
-        for part in prompt:
-            if part.get("type") == "text":
-                new_prompt.append(part)
-        return new_prompt
-
-    @staticmethod
-    def _redact_payload(payload: dict) -> None:
-        if "content" in payload:
-            payload["content"] = ForkTapeStore._redact_prompt(payload["content"])
-        elif "prompt" in payload:
-            payload["prompt"] = ForkTapeStore._redact_prompt(payload["prompt"])
+            current_entries = cast(list[TapeEntry], self._current.read(tape) or [])
+        return [entry.copy() for entry in parent_entries] + [entry.copy() for entry in current_entries]
 
     async def append(self, tape: str, entry: TapeEntry) -> None:
-        self._redact_payload(entry.payload)
-        self._current.append(tape, entry)
+        current = self._current
+        if current is _emtpy_store:
+            await self._parent.append(tape, entry)
+            return
+        current.append(tape, entry)
 
     @contextlib.asynccontextmanager
     async def fork(self, tape: str, merge_back: bool = True) -> AsyncGenerator[None, None]:
@@ -116,6 +101,16 @@ class EmptyTapeStore:
 
 
 _emtpy_store = EmptyTapeStore()
+
+
+class _ListTapeStore(InMemoryQueryMixin):
+    """Queryable list-backed tape store used to replay Republic query semantics."""
+
+    def __init__(self, entries: list[TapeEntry]) -> None:
+        self._entries = [entry.copy() for entry in entries]
+
+    def read(self, tape: str) -> list[TapeEntry] | None:
+        return [entry.copy() for entry in self._entries]
 
 
 class FileTapeStore(InMemoryQueryMixin):
@@ -300,7 +295,7 @@ class TapeFile:
             self._read_locked()
             with self.path.open("a", encoding="utf-8") as handle:
                 next_id = self._next_id()
-                stored = TapeEntry(next_id, entry.kind, dict(entry.payload), dict(entry.meta))
+                stored = TapeEntry(next_id, entry.kind, dict(entry.payload), dict(entry.meta), entry.date)
                 handle.write(json.dumps(asdict(stored), ensure_ascii=False) + "\n")
                 self._read_entries.append(stored)
                 self._read_offset = handle.tell()

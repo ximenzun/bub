@@ -93,6 +93,10 @@ class _FakeTapeService:
     async def ensure_bootstrap_anchor(self, tape_name: str) -> None:
         pass
 
+    async def hydrate_context(self, tape, runtime_state: dict[str, object] | None = None) -> None:
+        if runtime_state:
+            tape.context.state.update(runtime_state)
+
     async def append_event(self, tape_name: str, name: str, payload: dict) -> None:
         pass
 

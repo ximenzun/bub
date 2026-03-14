@@ -9,6 +9,13 @@ from typing import TYPE_CHECKING, Literal, cast
 from pydantic import BaseModel, Field
 from republic import AsyncTapeStore, TapeQuery, ToolContext
 
+from bub.builtin.context import (
+    DEFAULT_TAPE_VIEW,
+    TAPE_ANCHOR_NAME_KEY,
+    TAPE_ANCHOR_STATE_KEY,
+    TapeView,
+    available_tape_views,
+)
 from bub.builtin.shell_manager import shell_manager
 from bub.commands import SlashCommandSpec
 from bub.skills import discover_skills
@@ -17,7 +24,7 @@ from bub.tools import REGISTRY, tool
 if TYPE_CHECKING:
     from bub.builtin.agent import Agent
 
-type EntryKind = Literal["event", "anchor", "system", "message", "tool_call", "tool_result"]
+type EntryKind = Literal["event", "anchor", "system", "message", "tool_call", "tool_result", "error"]
 
 DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 DEFAULT_HEADERS = {"accept": "text/markdown"}
@@ -35,9 +42,9 @@ class SearchInput(BaseModel):
     limit: int = Field(20, description="Maximum number of search results to return.")
     start: str | None = Field(None, description="Optional start date to filter entries (ISO format).")
     end: str | None = Field(None, description="Optional end date to filter entries (ISO format).")
-    kinds: list[EntryKind] = Field(
-        default=["message", "tool_result"],
-        description="Optional list of entry kinds to filter search results.",
+    kinds: list[EntryKind] | None = Field(
+        default=None,
+        description="Optional list of entry kinds to filter entries. Defaults to all tape entry kinds.",
     )
 
 
@@ -58,6 +65,11 @@ class SubAgentInput(BaseModel):
         None,
         description="Optional list of allowed skill names for the sub-agent. If not specified, the sub-agent can use any skill available to the main agent.",
     )
+
+
+class TapeViewInput(BaseModel):
+    view: TapeView = Field(DEFAULT_TAPE_VIEW, description=f"One of: {', '.join(available_tape_views())}.")
+    limit: int = Field(50, ge=1, description="Maximum number of rendered messages to return.")
 
 
 @tool(context=True)
@@ -182,12 +194,11 @@ async def tape_info(context: ToolContext) -> str:
 async def tape_search(param: SearchInput, *, context: ToolContext) -> str:
     """Search for entries in the current tape that match the query. Returns a list of matching entries."""
     agent = _get_agent(context)
-    query = (
-        TapeQuery[AsyncTapeStore](tape=context.tape or "", store=agent.tapes._store)
-        .query(param.query)
-        .kinds(*param.kinds)
-        .limit(param.limit)
+    query = TapeQuery[AsyncTapeStore](tape=context.tape or "", store=agent.tapes._store).query(param.query).limit(
+        param.limit
     )
+    if param.kinds:
+        query = query.kinds(*param.kinds)
     if param.start or param.end:
         query = query.between_dates(param.start or "", param.end or "")
 
@@ -206,14 +217,20 @@ async def tape_reset(archive: bool = False, *, context: ToolContext) -> str:
     """Reset the current tape, optionally archiving it."""
     agent = _get_agent(context)
     result = await agent.tapes.reset(context.tape or "", archive=archive)
+    reset_state: dict[str, object] = {"owner": "human"}
+    if archive and result.startswith("Archived: "):
+        reset_state["archived"] = result.removeprefix("Archived: ").strip()
+    _replace_anchor_state(context.state, "session/start", reset_state)
     return result
 
 
 @tool(context=True, name="tape.handoff")
-async def tape_handoff(name: str = "handoff", summary: str = "", *, context: ToolContext) -> str:
+async def tape_handoff(name: str = "handoff", summary: str = "", state_json: str = "", *, context: ToolContext) -> str:
     """Add a handoff anchor to the current tape."""
     agent = _get_agent(context)
-    await agent.tapes.handoff(context.tape or "", name=name, state={"summary": summary})
+    state = _handoff_state(summary=summary, state_json=state_json)
+    await agent.tapes.handoff(context.tape or "", name=name, state=state)
+    _replace_anchor_state(context.state, name, state)
     return f"anchor added: {name}"
 
 
@@ -224,7 +241,52 @@ async def tape_anchors(*, context: ToolContext) -> str:
     anchors = await agent.tapes.anchors(context.tape or "")
     if not anchors:
         return "(no anchors)"
-    return "\n".join(f"- {anchor.name}" for anchor in anchors)
+    return "\n".join(
+        f"- {anchor.name} @ {anchor.date}"
+        + (f" {json.dumps(anchor.state, ensure_ascii=False, sort_keys=True, default=str)}" if anchor.state else "")
+        for anchor in anchors
+    )
+
+
+@tool(context=True, name="tape.view", model=TapeViewInput)
+async def tape_view(param: TapeViewInput, *, context: ToolContext) -> str:
+    """Render a resolved tape view so you can inspect what the model sees."""
+    agent = _get_agent(context)
+    snapshot = await agent.tapes.context_snapshot(
+        context.tape or "",
+        view=param.view,
+        runtime_state=context.state,
+    )
+    messages = snapshot.messages[-param.limit :]
+    lines = [
+        f"name: {snapshot.name}",
+        f"view: {snapshot.view}",
+        f"anchor: {snapshot.anchor}",
+        f"messages: {len(snapshot.messages)}",
+    ]
+    if snapshot.state:
+        lines.append(f"anchor_state: {json.dumps(snapshot.state, ensure_ascii=False, sort_keys=True, default=str)}")
+    lines.append("---")
+    lines.extend(json.dumps(message, ensure_ascii=False, default=str) for message in messages)
+    return "\n".join(lines)
+
+
+@tool(context=True, name="tape.context", model=TapeViewInput)
+async def tape_context(param: TapeViewInput, *, context: ToolContext) -> str:
+    """Show the resolved tape anchor/state for a given view."""
+    agent = _get_agent(context)
+    snapshot = await agent.tapes.context_snapshot(
+        context.tape or "",
+        view=param.view,
+        runtime_state=context.state,
+    )
+    return (
+        f"name: {snapshot.name}\n"
+        f"view: {snapshot.view}\n"
+        f"anchor: {snapshot.anchor}\n"
+        f"messages: {len(snapshot.messages)}\n"
+        f"anchor_state: {json.dumps(snapshot.state, ensure_ascii=False, sort_keys=True, default=str)}"
+    )
 
 
 @tool(name="web.fetch")
@@ -280,8 +342,10 @@ def show_help() -> str:
         "  ,skill name=foo\n"
         "  ,tape.info\n"
         "  ,tape.search query=error\n"
-        "  ,tape.handoff name=phase-1 summary='done'\n"
+        "  ,tape.handoff name=phase-1 summary='done' state_json='{\"owner\":\"agent\"}'\n"
         "  ,tape.anchors\n"
+        "  ,tape.view view=active\n"
+        "  ,tape.context view=timeline\n"
         "  ,fs.read path=README.md\n"
         "  ,fs.write path=tmp.txt content='hello'\n"
         "  ,fs.edit path=tmp.txt old=hello new=world\n"
@@ -317,6 +381,29 @@ def _resolve_path(context: ToolContext, raw_path: str) -> Path:
         raise TypeError("runtime workspace must be a filesystem path")
     workspace_path = Path(workspace)
     return (workspace_path / path).resolve()
+
+
+def _handoff_state(summary: str, state_json: str) -> dict[str, object]:
+    state: dict[str, object] = {}
+    if state_json.strip():
+        parsed = json.loads(state_json)
+        if not isinstance(parsed, dict):
+            raise ValueError("state_json must decode to a JSON object")
+        state.update(parsed)
+    if summary.strip():
+        state["summary"] = summary.strip()
+    return state
+
+
+def _replace_anchor_state(target: dict[str, object], anchor_name: str, anchor_state: dict[str, object]) -> None:
+    previous_state = target.get(TAPE_ANCHOR_STATE_KEY)
+    if isinstance(previous_state, dict):
+        for key in previous_state:
+            target.pop(key, None)
+    for key, value in anchor_state.items():
+        target[key] = value
+    target[TAPE_ANCHOR_NAME_KEY] = anchor_name
+    target[TAPE_ANCHOR_STATE_KEY] = dict(anchor_state)
 
 
 def _render_slash_command_index(commands: list[SlashCommandSpec]) -> str:
