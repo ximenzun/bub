@@ -4,8 +4,9 @@ import os
 import pathlib
 import re
 from typing import Literal
+from urllib.parse import urlparse
 
-from pydantic import Field
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 DEFAULT_MODEL = "openrouter:qwen/qwen3-coder-next"
@@ -28,6 +29,18 @@ class AgentSettings(BaseSettings):
     max_steps: int = 50
     max_tokens: int = DEFAULT_MAX_TOKENS
     model_timeout_seconds: int | None = None
+    @model_validator(mode="after")
+    def _validate_api_shape(self) -> AgentSettings:
+        if self.api_format != "responses" or not isinstance(self.api_base, str):
+            return self
+        path = urlparse(self.api_base).path.casefold()
+        if "chat-completions" in path:
+            raise ValueError(
+                "BUB_API_FORMAT=responses is incompatible with a chat-completions endpoint base URL. "
+                "Use BUB_API_FORMAT=messages for chat-completions-style providers, "
+                "or point BUB_API_BASE at a Responses-compatible root base URL instead."
+            )
+        return self
 
     @classmethod
     def from_env(cls) -> AgentSettings:

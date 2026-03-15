@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
+import pytest
+
 from bub.builtin.settings import AgentSettings
 
 
@@ -90,3 +92,12 @@ def test_from_env_os_environ_overrides_dotenv() -> None:
 
     assert isinstance(settings.api_key, dict)
     assert settings.api_key["openai"] == "sk-from-env"
+
+
+def test_from_env_rejects_responses_api_with_chat_completions_base() -> None:
+    with pytest.raises(ValueError, match="BUB_API_FORMAT=responses is incompatible"):
+        _from_env_with({
+            "BUB_API_KEY": "sk-test",
+            "BUB_API_BASE": "http://127.0.0.1:20002/chat-completions",
+            "BUB_API_FORMAT": "responses",
+        })

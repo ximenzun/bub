@@ -1,6 +1,5 @@
 import asyncio
 import contextlib
-import json
 from collections.abc import Collection
 from dataclasses import replace
 from typing import Any
@@ -115,6 +114,16 @@ class ChannelManager:
             content=content_of(message),
             context=field_of(message, "context", {}),
             kind=field_of(message, "kind", "normal"),
+            media=field_of(message, "media", []),
+            output_channel=str(field_of(message, "output_channel", channel_key)),
+            account_id=str(field_of(message, "account_id", "default")),
+            message_id=_string_or_none(field_of(message, "message_id")),
+            conversation=field_of(message, "conversation"),
+            sender=field_of(message, "sender"),
+            reply_grant=field_of(message, "reply_grant"),
+            attachments=field_of(message, "attachments", []),
+            actions=field_of(message, "actions", []),
+            metadata=field_of(message, "metadata", {}),
         )
         await channel.send(outbound)
         return True
@@ -182,6 +191,13 @@ def _channel_message_from_action(action: OutboundAction) -> ChannelMessage | Non
         chat_id=conversation.chat_id,
         content=action.text or "",
         context=_base_context(action),
+        output_channel=channel_key,
+        account_id=conversation.account_id,
+        message_id=action.message_id,
+        conversation=conversation,
+        reply_grant=action.reply_grant,
+        attachments=action.attachments,
+        metadata=dict(action.metadata),
     )
 
 
@@ -232,6 +248,13 @@ def _telegram_message_from_action(action: OutboundAction) -> ChannelMessage:
         chat_id=conversation.chat_id,
         content=action.text or "",
         context=context,
+        output_channel=conversation.channel_key,
+        account_id=conversation.account_id,
+        message_id=action.message_id,
+        conversation=conversation,
+        reply_grant=action.reply_grant,
+        attachments=action.attachments,
+        metadata=dict(action.metadata),
     )
 
 
@@ -254,6 +277,13 @@ def _lark_message_from_action(action: OutboundAction) -> ChannelMessage:
         chat_id=conversation.chat_id,
         content=action.text or "",
         context=context,
+        output_channel=conversation.channel_key,
+        account_id=conversation.account_id,
+        message_id=action.message_id,
+        conversation=conversation,
+        reply_grant=action.reply_grant,
+        attachments=action.attachments,
+        metadata=dict(action.metadata),
     )
 
 
@@ -261,10 +291,47 @@ def _wecom_message_from_action(action: OutboundAction) -> ChannelMessage:
     conversation = action.conversation
     if conversation is None:
         raise ValueError("wecom outbound action requires conversation context")
+    context = _base_context(action)
+    context["wecom_kind"] = action.kind
+    if action.content_type != "text":
+        context["content_type"] = action.content_type
+    if action.card is not None:
+        context["card"] = action.card
+    if action.reply_grant is not None and action.reply_grant.token is not None:
+        context["wecom_reply_token"] = action.reply_grant.token
+        if action.reply_grant.reply_to_message_id is not None:
+            context["wecom_reply_to_message_id"] = action.reply_grant.reply_to_message_id
+        response_url = action.reply_grant.metadata.get("response_url")
+        event_type = action.reply_grant.metadata.get("event_type")
+        raw_msgtype = action.reply_grant.metadata.get("raw_msgtype")
+        if response_url is not None:
+            context["wecom_response_url"] = response_url
+        if event_type is not None:
+            context["wecom_event_type"] = event_type
+        if raw_msgtype is not None:
+            context["wecom_raw_msgtype"] = raw_msgtype
     return ChannelMessage(
         session_id=f"{conversation.channel_key}:{conversation.chat_id}",
         channel=conversation.channel_key,
         chat_id=conversation.chat_id,
-        content=json.dumps({"action": action.as_dict()}, ensure_ascii=False),
-        context=_base_context(action),
+        content=action.text or "",
+        context=context,
+        output_channel=conversation.channel_key,
+        account_id=conversation.account_id,
+        message_id=action.message_id,
+        conversation=conversation,
+        reply_grant=action.reply_grant,
+        attachments=action.attachments,
+        metadata={
+            **dict(action.metadata),
+            "mentions": [mention.as_dict() for mention in action.mentions],
+            "target_ids": list(action.target_ids),
+        },
     )
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None

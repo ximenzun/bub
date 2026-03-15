@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import contextlib
-from collections.abc import Awaitable, Callable
+from collections.abc import Awaitable, Callable, Mapping
 from dataclasses import dataclass, field, replace
 from typing import Any, Literal
 
@@ -19,6 +19,19 @@ class MediaItem:
     mime_type: str
     filename: str | None = None
     data_fetcher: Callable[[], Awaitable[bytes]] | None = None
+
+    @classmethod
+    def from_mapping(cls, data: Mapping[str, Any]) -> MediaItem:
+        media_type = str(data.get("type") or "document")
+        if media_type not in {"image", "audio", "video", "document"}:
+            media_type = "document"
+        data_fetcher = data.get("data_fetcher")
+        return cls(
+            type=media_type,  # type: ignore[arg-type]
+            mime_type=str(data.get("mime_type") or "application/octet-stream"),
+            filename=_string_or_none(data.get("filename") or data.get("file_name")),
+            data_fetcher=data_fetcher if callable(data_fetcher) else None,
+        )
 
 
 @dataclass
@@ -55,6 +68,11 @@ class ChannelMessage:
             self.sender = ParticipantRef.from_mapping(self.sender)
         if isinstance(self.reply_grant, dict):
             self.reply_grant = ReplyGrant.from_mapping(self.reply_grant)
+        self.media = [
+            item if isinstance(item, MediaItem) else MediaItem.from_mapping(item)
+            for item in self.media
+            if isinstance(item, MediaItem | Mapping)
+        ]
         self.attachments = [
             item if isinstance(item, Attachment) else Attachment.from_mapping(item) for item in self.attachments
         ]
@@ -95,3 +113,10 @@ class ChannelMessage:
         media = [item for message in batch for item in message.media]
         attachments = [item for message in batch for item in message.attachments]
         return replace(template, content=content, media=media, attachments=attachments)
+
+
+def _string_or_none(value: Any) -> str | None:
+    if value is None:
+        return None
+    text = str(value)
+    return text if text else None

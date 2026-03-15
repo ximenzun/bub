@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -12,6 +13,7 @@ from bub.builtin.hook_impl import BuiltinImpl
 from bub.channels.message import ChannelMessage, MediaItem
 from bub.channels.telegram import TelegramChannel, _extract_media_items
 from bub.framework import BubFramework
+from bub.social import Attachment
 
 # ---------------------------------------------------------------------------
 # MediaItem & ChannelMessage
@@ -57,6 +59,31 @@ def test_channel_message_from_batch_no_media() -> None:
     merged = ChannelMessage.from_batch([m1, m2])
 
     assert merged.media == []
+
+
+def test_channel_message_coerces_mapping_media_items() -> None:
+    async def fetch_bytes() -> bytes:
+        return b"abc"
+
+    message = ChannelMessage(
+        session_id="s",
+        channel="tg",
+        content="hello",
+        media=[
+            {
+                "type": "image",
+                "mime_type": "image/png",
+                "filename": "sample.png",
+                "data_fetcher": fetch_bytes,
+            }
+        ],
+    )
+
+    assert len(message.media) == 1
+    assert isinstance(message.media[0], MediaItem)
+    assert message.media[0].type == "image"
+    assert message.media[0].filename == "sample.png"
+    assert message.media[0].data_fetcher is fetch_bytes
 
 
 # ---------------------------------------------------------------------------
@@ -232,7 +259,8 @@ class FakeAgent:
 
 def _build_impl(tmp_path: Path) -> tuple[BubFramework, BuiltinImpl]:
     framework = BubFramework()
-    impl = BuiltinImpl(framework)
+    with patch("bub.builtin.hook_impl.Agent", lambda fw: FakeAgent(tmp_path)):
+        impl = BuiltinImpl(framework)
     impl.agent = FakeAgent(tmp_path)  # type: ignore[assignment]
     return framework, impl
 
@@ -251,6 +279,7 @@ async def test_build_prompt_returns_string_without_media(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_build_prompt_returns_multimodal_parts_with_image_media(tmp_path: Path) -> None:
     _, impl = _build_impl(tmp_path)
+    state: dict[str, object] = {}
     message = ChannelMessage(
         session_id="s",
         channel="tg",
@@ -258,7 +287,7 @@ async def test_build_prompt_returns_multimodal_parts_with_image_media(tmp_path: 
         media=[MediaItem(type="image", mime_type="image/jpeg", data_fetcher=_async_return(b"\xff\xd8"))],
     )
 
-    result = await impl.build_prompt(message, session_id="s", state={})
+    result = await impl.build_prompt(message, session_id="s", state=state)
 
     assert isinstance(result, list)
     assert len(result) == 2
@@ -271,6 +300,49 @@ async def test_build_prompt_returns_multimodal_parts_with_image_media(tmp_path: 
     assert image_part["type"] == "image_url"
     expected = base64.b64encode(b"\xff\xd8").decode("utf-8")
     assert image_part["image_url"]["url"] == f"data:image/jpeg;base64,{expected}"
+    assert state["_inbound_media_parts"] == [image_part]
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_returns_multimodal_parts_with_image_attachment(tmp_path: Path) -> None:
+    _, impl = _build_impl(tmp_path)
+    image_path = tmp_path / "photo.png"
+    image_path.write_bytes(b"\x89PNG")
+    message = ChannelMessage(
+        session_id="s",
+        channel="tg",
+        content="describe this attachment",
+        attachments=[Attachment(content_type="image/*", metadata={"path": str(image_path)})],
+    )
+
+    result = await impl.build_prompt(message, session_id="s", state={})
+
+    assert isinstance(result, list)
+    assert len(result) == 2
+    assert result[1]["type"] == "image_url"
+    expected = base64.b64encode(b"\x89PNG").decode("utf-8")
+    assert result[1]["image_url"]["url"] == f"data:image/png;base64,{expected}"
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_prefers_media_over_duplicate_image_attachments(tmp_path: Path) -> None:
+    _, impl = _build_impl(tmp_path)
+    image_path = tmp_path / "photo.png"
+    image_path.write_bytes(b"\x89PNG")
+    message = ChannelMessage(
+        session_id="s",
+        channel="tg",
+        content="describe this",
+        media=[MediaItem(type="image", mime_type="image/jpeg", data_fetcher=_async_return(b"\xff\xd8"))],
+        attachments=[Attachment(content_type="image/png", metadata={"path": str(image_path)})],
+    )
+
+    result = await impl.build_prompt(message, session_id="s", state={})
+
+    assert isinstance(result, list)
+    assert len(result) == 2
+    expected = base64.b64encode(b"\xff\xd8").decode("utf-8")
+    assert result[1]["image_url"]["url"] == f"data:image/jpeg;base64,{expected}"
 
 
 @pytest.mark.asyncio
