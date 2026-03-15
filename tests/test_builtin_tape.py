@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -65,6 +66,47 @@ async def test_context_snapshot_timeline_renders_system_anchor_and_events(tmp_pa
     assert "[anchor] phase-1" in rendered
     assert "[event:handoff]" in rendered
     assert "system note" in rendered
+
+
+@pytest.mark.asyncio
+async def test_context_snapshot_sanitizes_multimodal_messages_and_tool_results(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape = service.session_tape("user/session", tmp_path)
+    await service.ensure_bootstrap_anchor(tape.name)
+    await tape.append_async(
+        TapeEntry.message(
+            {
+                "role": "user",
+                "content": [
+                    {"type": "text", "text": "describe this"},
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}},
+                ],
+            }
+        )
+    )
+    await tape.append_async(
+        TapeEntry.tool_result(
+            [
+                json.dumps(
+                    {
+                        "ok": True,
+                        "base64": "cG5n",
+                        "preview": "data:image/png;base64,cG5n",
+                    },
+                    ensure_ascii=False,
+                )
+            ]
+        )
+    )
+
+    snapshot = await service.context_snapshot(tape.name, runtime_state={"session_id": "user/session"})
+
+    assert snapshot.messages[0]["role"] == "user"
+    assert snapshot.messages[0]["content"] == "describe this\n\n[1 image omitted from tape history]"
+    assert snapshot.messages[1]["role"] == "tool"
+    assert "data:image/png;base64" not in snapshot.messages[1]["content"]
+    assert '"base64": "[base64 omitted: 4 chars]"' in snapshot.messages[1]["content"]
+    assert "[data URL omitted: image/png; 4 chars]" in snapshot.messages[1]["content"]
 
 
 @pytest.mark.asyncio
