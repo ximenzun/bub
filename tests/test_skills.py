@@ -1,8 +1,10 @@
 from pathlib import Path
+from types import SimpleNamespace
 
 from bub.skills import (
     SKILL_FILE_NAME,
     SkillMetadata,
+    _builtin_skills_root,
     _parse_frontmatter,
     _read_skill,
     discover_skills,
@@ -58,6 +60,17 @@ def test_read_skill_rejects_invalid_metadata_field_type(tmp_path: Path) -> None:
 def test_parse_frontmatter_returns_empty_on_invalid_yaml() -> None:
     content = "---\nname: [broken\n---\nbody\n"
     assert _parse_frontmatter(content) == {}
+
+
+def test_builtin_skills_root_uses_skills_namespace(tmp_path: Path, monkeypatch) -> None:
+    expected_paths = [str(tmp_path / "skills-a"), str(tmp_path / "skills-b")]
+
+    monkeypatch.setattr(
+        "importlib.import_module",
+        lambda name: SimpleNamespace(__path__=expected_paths) if name == "skills" else None,
+    )
+
+    assert _builtin_skills_root() == [Path(path) for path in expected_paths]
 
 
 def test_discover_skills_prefers_project_over_global_and_builtin(tmp_path: Path, monkeypatch) -> None:
