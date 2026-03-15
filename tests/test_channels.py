@@ -13,7 +13,7 @@ from bub.channels.handler import BufferedMessageHandler
 from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel, TelegramMessageParser
-from bub.social import ConversationRef, LiveSurfaceRef, OutboundAction, ReplyGrant
+from bub.social import Attachment, ConversationRef, LiveSurfaceRef, MentionTarget, OutboundAction, ReplyGrant
 
 
 class FakeChannel:
@@ -116,6 +116,75 @@ async def test_channel_manager_dispatch_uses_output_channel_and_preserves_metada
 
 
 @pytest.mark.asyncio
+async def test_channel_manager_dispatch_preserves_structured_fields_from_mapping() -> None:
+    lark = FakeChannel("lark")
+    manager = ChannelManager(FakeFramework({"lark": lark}), enabled_channels=["lark"])
+    attachment_path = "/var/bub/demo.png"
+
+    result = await manager.dispatch(
+        {
+            "session_id": "session",
+            "channel": "cli",
+            "output_channel": "lark",
+            "chat_id": "oc_123",
+            "content": "see attachment",
+            "message_id": "om_456",
+            "attachments": [
+                {
+                    "content_type": "image/png",
+                    "metadata": {"path": attachment_path},
+                }
+            ],
+            "reply_grant": {"mode": "message_id", "reply_to_message_id": "om_parent"},
+            "conversation": {"platform": "lark", "chat_id": "oc_123", "thread_id": "omt_789"},
+            "metadata": {"source": "test"},
+        }
+    )
+
+    assert result is True
+    assert len(lark.sent) == 1
+    outbound = lark.sent[0]
+    assert outbound.channel == "lark"
+    assert outbound.output_channel == "lark"
+    assert outbound.message_id == "om_456"
+    assert outbound.attachments == [Attachment(content_type="image/png", metadata={"path": attachment_path})]
+    assert outbound.reply_grant == ReplyGrant(mode="message_id", reply_to_message_id="om_parent")
+    assert outbound.conversation == ConversationRef(platform="lark", chat_id="oc_123", thread_id="omt_789")
+    assert outbound.metadata == {"source": "test"}
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_dispatch_mapping_preserves_structured_attachments_and_reply_grant() -> None:
+    cli_channel = FakeChannel("cli")
+    manager = ChannelManager(FakeFramework({"cli": cli_channel}), enabled_channels=["cli"])
+    reply_token = "-".join(["req", "1"])
+
+    result = await manager.dispatch(
+        {
+            "session_id": "session",
+            "channel": "telegram",
+            "output_channel": "cli",
+            "chat_id": "room",
+            "content": "hello",
+            "attachments": [
+                {
+                    "content_type": "image/png",
+                    "url": "file:///tmp/example.png",
+                }
+            ],
+            "reply_grant": {"mode": "token", "token": reply_token},
+            "metadata": {"source": "test"},
+        }
+    )
+
+    assert result is True
+    outbound = cli_channel.sent[0]
+    assert outbound.attachments == [Attachment(content_type="image/png", url="file:///tmp/example.png")]
+    assert outbound.reply_grant == ReplyGrant(mode="token", token=reply_token)
+    assert outbound.metadata == {"source": "test"}
+
+
+@pytest.mark.asyncio
 async def test_channel_manager_dispatch_preserves_channel_message_context_and_account_id() -> None:
     telegram = FakeChannel("telegram")
     manager = ChannelManager(FakeFramework({"telegram": telegram}), enabled_channels=["telegram"])
@@ -159,6 +228,88 @@ async def test_channel_manager_dispatch_converts_outbound_action_for_telegram() 
     assert outbound.context["telegram_kind"] == "set_draft"
     assert outbound.context["surface_id"] == "77"
     assert outbound.context["reply_to_message_id"] == "42"
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_dispatch_converts_outbound_action_for_lark_with_path_attachment() -> None:
+    lark = FakeChannel("lark")
+    manager = ChannelManager(FakeFramework({"lark": lark}), enabled_channels=["lark"])
+    attachment_path = "/var/bub/demo.png"
+
+    result = await manager.dispatch(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="lark", chat_id="oc_123"),
+            text="see image",
+            content_type="image",
+            attachments=[Attachment(content_type="image/png", metadata={"path": attachment_path})],
+        )
+    )
+
+    assert result is True
+    assert len(lark.sent) == 1
+    outbound = lark.sent[0]
+    assert outbound.channel == "lark"
+    assert outbound.content == "see image"
+    assert outbound.context["content_type"] == "image"
+    assert outbound.context["attachment"] == attachment_path
+    assert outbound.attachments == [Attachment(content_type="image/png", metadata={"path": attachment_path})]
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_dispatch_converts_outbound_action_for_lark_with_url_attachment() -> None:
+    lark = FakeChannel("lark")
+    manager = ChannelManager(FakeFramework({"lark": lark}), enabled_channels=["lark"])
+    attachment = Attachment(content_type="image/png", url="file:///tmp/chart.png")
+
+    result = await manager.dispatch(
+        OutboundAction(
+            kind="send_message",
+            conversation=ConversationRef(platform="lark", chat_id="room"),
+            text="see chart",
+            content_type="image",
+            attachments=[attachment],
+        )
+    )
+
+    assert result is True
+    outbound = lark.sent[0]
+    assert outbound.attachments == [attachment]
+    assert outbound.context["content_type"] == "image"
+    assert outbound.context["attachment"] == "file:///tmp/chart.png"
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_dispatch_converts_outbound_action_for_wecom_with_structured_fields() -> None:
+    wecom = FakeChannel("wecom_longconn_bot")
+    manager = ChannelManager(FakeFramework({"wecom_longconn_bot": wecom}), enabled_channels=["wecom_longconn_bot"])
+    attachment = Attachment(content_type="image/png", url="file:///tmp/chart.png")
+    reply_token = "-".join(["req", "1"])
+    reply_grant = ReplyGrant(mode="token", token=reply_token)
+
+    result = await manager.dispatch(
+        OutboundAction(
+            kind="reply_message",
+            conversation=ConversationRef(platform="wecom", route_channel="wecom_longconn_bot", chat_id="room"),
+            text="see chart",
+            content_type="image",
+            attachments=[attachment],
+            mentions=[MentionTarget(kind="user_id", value="user-1")],
+            target_ids=["user-2"],
+            reply_grant=reply_grant,
+        )
+    )
+
+    assert result is True
+    outbound = wecom.sent[0]
+    assert outbound.content == "see chart"
+    assert outbound.attachments == [attachment]
+    assert outbound.reply_grant == reply_grant
+    assert outbound.context["wecom_kind"] == "reply_message"
+    assert outbound.context["content_type"] == "image"
+    assert outbound.context["wecom_reply_token"] == reply_token
+    assert outbound.metadata["mentions"] == [{"kind": "user_id", "value": "user-1", "label": None}]
+    assert outbound.metadata["target_ids"] == ["user-2"]
 
 
 def test_channel_manager_enabled_channels_excludes_cli_from_all() -> None:

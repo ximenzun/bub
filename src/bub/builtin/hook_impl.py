@@ -1,8 +1,11 @@
+import asyncio
 import base64
+import mimetypes
 import sys
 from pathlib import Path
 from typing import cast
 
+import aiohttp
 import typer
 from loguru import logger
 from republic.tape import TapeStore
@@ -13,6 +16,7 @@ from bub.channels.message import ChannelMessage, MediaItem, MessageKind
 from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
+from bub.social.types import Attachment
 from bub.types import Envelope, MessageHandler, State
 
 AGENTS_FILE_NAME = "AGENTS.md"
@@ -112,20 +116,13 @@ class BuiltinImpl:
         text = f"{context_prefix}{content}"
 
         media = field_of(message, "media") or []
-        if not media:
+        attachments = field_of(message, "attachments") or []
+        if not media and not attachments:
             return text
 
-        media_parts: list[dict] = []
-        for item in cast("list[MediaItem]", media):
-            match item.type:
-                case "image":
-                    if item.data_fetcher is None:
-                        continue
-                    data = await item.data_fetcher()
-                    data_url = f"data:{item.mime_type};base64,{base64.b64encode(data).decode('utf-8')}"
-                    media_parts.append({"type": "image_url", "image_url": {"url": data_url}})
-                case _:
-                    pass  # TODO: Not supported for now
+        media_parts = await _image_parts_from_media(cast("list[MediaItem]", media))
+        if not media_parts:
+            media_parts = await _image_parts_from_attachments(cast("list[Attachment]", attachments))
         if media_parts:
             return [{"type": "text", "text": text}, *media_parts]
         return text
@@ -288,3 +285,70 @@ def _context_string(context: dict[str, object], key: str) -> str | None:
         return None
     text = str(value)
     return text if text else None
+
+
+async def _image_parts_from_media(media: list[MediaItem]) -> list[dict[str, object]]:
+    media_parts: list[dict[str, object]] = []
+    for item in media:
+        if item.type != "image" or item.data_fetcher is None:
+            continue
+        data = await item.data_fetcher()
+        media_parts.append(_image_url_part(item.mime_type, data))
+    return media_parts
+
+
+async def _image_parts_from_attachments(attachments: list[Attachment]) -> list[dict[str, object]]:
+    media_parts: list[dict[str, object]] = []
+    for attachment in attachments:
+        if not attachment.content_type.startswith("image/"):
+            continue
+        source = _attachment_source(attachment)
+        if source is None:
+            continue
+        data_url = await _attachment_data_url(attachment.content_type, source)
+        if data_url is not None:
+            media_parts.append({"type": "image_url", "image_url": {"url": data_url}})
+    return media_parts
+
+
+def _image_url_part(mime_type: str, data: bytes) -> dict[str, object]:
+    data_url = f"data:{mime_type};base64,{base64.b64encode(data).decode('utf-8')}"
+    return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _attachment_source(attachment: Attachment) -> str | None:
+    if attachment.url:
+        return attachment.url
+    path = attachment.metadata.get("path")
+    if path is None:
+        return None
+    return str(path)
+
+
+async def _attachment_data_url(content_type: str, source: str) -> str | None:
+    if source.startswith("data:"):
+        return source
+    if source.startswith("http://") or source.startswith("https://"):
+        async with aiohttp.ClientSession() as session, session.get(source) as response:
+            response.raise_for_status()
+            data = await response.read()
+            detected_type = response.headers.get("Content-Type")
+        return _data_url(_resolved_content_type(content_type, detected_type), data)
+    path = Path(source.removeprefix("file://")).expanduser()
+    if not path.is_file():
+        return None
+    data = await asyncio.to_thread(path.read_bytes)
+    guessed_type, _encoding = mimetypes.guess_type(path.name)
+    return _data_url(_resolved_content_type(content_type, guessed_type), data)
+
+
+def _data_url(content_type: str, data: bytes) -> str:
+    return f"data:{content_type};base64,{base64.b64encode(data).decode('utf-8')}"
+
+
+def _resolved_content_type(content_type: str, detected_type: str | None) -> str:
+    if content_type != "image/*":
+        return content_type
+    if isinstance(detected_type, str) and detected_type:
+        return detected_type
+    return "image/png"

@@ -54,7 +54,7 @@ def _make_agent() -> Agent:
     with patch.object(Agent, "__init__", lambda self, fw: None):
         agent = Agent.__new__(Agent)
 
-    agent.settings = AgentSettings(model="test:model", api_key="k", api_base="b")
+    agent.settings = AgentSettings(model="test:model", api_key="k", api_base="b", api_format="completion")
     agent.framework = framework
     return agent
 
@@ -164,3 +164,62 @@ async def test_agent_run_model_defaults_to_none() -> None:
     await agent.run(session_id="user/s1", prompt="hello", state={"_runtime_workspace": "/tmp"})  # noqa: S108
 
     assert fake_tapes.run_tools_model is None
+
+
+class _ContinueThenTextTapeService(_FakeTapeService):
+    def __init__(self, fork_capture: _ForkCapture) -> None:
+        super().__init__(fork_capture)
+        self.prompts: list[str | list[dict[str, object]]] = []
+        self._call_count = 0
+
+    def session_tape(self, session_id: str, workspace: Any) -> MagicMock:
+        tape = MagicMock()
+        tape.name = "test-tape"
+        tape.context.state = {}
+
+        async def fake_run_tools_async(**kwargs: Any) -> ToolAutoResult:
+            self.prompts.append(kwargs["prompt"])
+            self._call_count += 1
+            if self._call_count == 1:
+                tape.context.state["_tool_media_parts"] = [
+                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}}
+                ]
+                return ToolAutoResult(kind="tools", text="", tool_calls=[{"id": "call_1"}], tool_results=[], error=None)
+            return ToolAutoResult(kind="text", text="done", tool_calls=[], tool_results=[], error=None)
+
+        tape.run_tools_async = fake_run_tools_async
+        return tape
+
+
+@pytest.mark.asyncio
+async def test_agent_continue_prompt_includes_pending_tool_media_parts() -> None:
+    agent = _make_agent()
+    fork_capture = _ForkCapture()
+    fake_tapes = _ContinueThenTextTapeService(fork_capture)
+    agent.tapes = fake_tapes  # type: ignore[assignment]
+
+    result = await agent.run(session_id="user/s1", prompt="hello", state={"_runtime_workspace": "/tmp"})  # noqa: S108
+
+    assert result == "done"
+    assert fake_tapes.prompts[0] == "hello"
+    assert fake_tapes.prompts[1] == [
+        {"type": "text", "text": "Continue the task or respond to the channel."},
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}},
+    ]
+
+
+@pytest.mark.asyncio
+async def test_agent_normalizes_multimodal_prompt_for_responses_api() -> None:
+    agent = _make_agent()
+    agent.settings.api_format = "responses"
+    fork_capture = _ForkCapture()
+    fake_tapes = _ContinueThenTextTapeService(fork_capture)
+    agent.tapes = fake_tapes  # type: ignore[assignment]
+
+    result = await agent.run(session_id="user/s1", prompt="hello", state={"_runtime_workspace": "/tmp"})  # noqa: S108
+
+    assert result == "done"
+    assert fake_tapes.prompts[1] == [
+        {"type": "input_text", "text": "Continue the task or respond to the channel."},
+        {"type": "input_image", "image_url": "data:image/png;base64,cG5n", "detail": "auto"},
+    ]

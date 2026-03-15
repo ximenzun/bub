@@ -69,7 +69,11 @@ class Agent:
             if isinstance(prompt, str) and prompt.strip().startswith(","):
                 return await self._run_command(tape=tape, line=prompt.strip())
             return await self._agent_loop(
-                tape=tape, prompt=prompt, model=model, allowed_skills=allowed_skills, allowed_tools=allowed_tools
+                tape=tape,
+                prompt=prompt,
+                model=model,
+                allowed_skills=allowed_skills,
+                allowed_tools=allowed_tools,
             )
 
     async def _run_command(self, tape: Tape, *, line: str) -> str:
@@ -165,10 +169,7 @@ class Agent:
                 )
                 return outcome.text
             if outcome.kind == "continue":
-                if "context" in tape.context.state:
-                    next_prompt = f"{CONTINUE_PROMPT} [context: {tape.context.state['context']}]"
-                else:
-                    next_prompt = CONTINUE_PROMPT
+                next_prompt = _continue_prompt(tape.context.state)
                 await self.tapes.append_event(
                     tape.name,
                     "loop.step",
@@ -224,9 +225,10 @@ class Agent:
             tools = [tool for tool in REGISTRY.values() if tool.name.casefold() in allowed_tools]
         else:
             tools = list(REGISTRY.values())
+        normalized_prompt = _normalize_prompt_for_api_format(prompt, self.settings.api_format)
         async with asyncio.timeout(self.settings.model_timeout_seconds):
             return await tape.run_tools_async(
-                prompt=prompt,  # republic accepts list content parts at runtime
+                prompt=normalized_prompt,
                 system_prompt=self._system_prompt(prompt_text, state=tape.context.state, allowed_skills=allowed_skills),
                 max_tokens=self.settings.max_tokens,
                 tools=model_tools(tools),
@@ -317,3 +319,65 @@ def _parse_args(args_tokens: list[str]) -> Args:
 def _extract_text_from_parts(parts: list[dict]) -> str:
     """Extract text content from multimodal content parts."""
     return "\n".join(p.get("text", "") for p in parts if p.get("type") == "text")
+
+
+def _continue_prompt(state: State) -> str | list[dict[str, object]]:
+    prompt_text = f"{CONTINUE_PROMPT} [context: {state['context']}]" if "context" in state else CONTINUE_PROMPT
+    media_parts = _pop_pending_tool_media_parts(state)
+    if not media_parts:
+        return prompt_text
+    return [{"type": "text", "text": prompt_text}, *media_parts]
+
+
+def _pop_pending_tool_media_parts(state: State) -> list[dict[str, object]]:
+    raw = state.pop("_tool_media_parts", None)
+    if not isinstance(raw, list):
+        return []
+    parts: list[dict[str, object]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        if item.get("type") != "image_url":
+            continue
+        image_url = item.get("image_url")
+        if not isinstance(image_url, dict):
+            continue
+        url = image_url.get("url")
+        if not isinstance(url, str) or not url:
+            continue
+        parts.append({"type": "image_url", "image_url": {"url": url}})
+    return parts
+
+
+def _normalize_prompt_for_api_format(
+    prompt: str | list[dict[str, object]],
+    api_format: str,
+) -> str | list[dict[str, object]]:
+    if api_format != "responses" or isinstance(prompt, str):
+        return prompt
+    normalized_parts: list[dict[str, object]] = []
+    for part in prompt:
+        if not isinstance(part, dict):
+            continue
+        normalized = _normalize_prompt_part_for_responses(part)
+        if normalized is not None:
+            normalized_parts.append(normalized)
+    return normalized_parts
+
+
+def _normalize_prompt_part_for_responses(part: dict[str, object]) -> dict[str, object] | None:
+    part_type = part.get("type")
+    if part_type == "input_text" or part_type == "input_image":
+        return dict(part)
+    if part_type == "text":
+        text = part.get("text")
+        if isinstance(text, str):
+            return {"type": "input_text", "text": text}
+        return None
+    if part_type == "image_url":
+        image_url = part.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else image_url
+        if isinstance(url, str) and url:
+            return {"type": "input_image", "image_url": url, "detail": "auto"}
+        return None
+    return dict(part)
