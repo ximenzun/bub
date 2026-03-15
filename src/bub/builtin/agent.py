@@ -31,6 +31,7 @@ from bub.utils import workspace_from_state
 CONTINUE_PROMPT = "Continue the task or respond to the channel."
 DEFAULT_BUB_HEADERS = {"HTTP-Referer": "https://bub.build/", "X-Title": "Bub"}
 HINT_RE = re.compile(r"\$([A-Za-z0-9_.-]+)")
+MEDIA_REFS_KEY = "_bub_media_refs"
 
 
 class Agent:
@@ -236,6 +237,7 @@ class Agent:
                     tools=model_tools(tools),
                     max_tokens=self.settings.max_tokens,
                     model=model,
+                    state=tape.context.state,
                     extra_options=extra_options,
                 )
             if _prompt_contains_image_parts(normalized_prompt):
@@ -247,6 +249,7 @@ class Agent:
                     tools=model_tools(tools),
                     max_tokens=self.settings.max_tokens,
                     model=model,
+                    state=tape.context.state,
                     extra_options=extra_options,
                 )
             return await tape.run_tools_async(
@@ -467,6 +470,7 @@ async def _run_tools_without_persisting_prompt(
     tools: list[Any],
     max_tokens: int,
     model: str | None,
+    state: State,
     extra_options: dict[str, object],
 ) -> ToolAutoResult:
     return await _run_tools_with_transient_prompt(
@@ -477,6 +481,7 @@ async def _run_tools_without_persisting_prompt(
         tools=tools,
         max_tokens=max_tokens,
         model=model,
+        state=state,
         extra_options=extra_options,
     )
 
@@ -490,6 +495,7 @@ async def _run_tools_with_transient_prompt(
     tools: list[Any],
     max_tokens: int,
     model: str | None,
+    state: State,
     extra_options: dict[str, object],
 ) -> ToolAutoResult:
     history = await tape.read_messages_async()
@@ -523,7 +529,7 @@ async def _run_tools_with_transient_prompt(
         require_tools=True,
         require_runnable=True,
     )
-    new_messages = [{"role": "user", "content": persisted_prompt}] if persisted_prompt is not None else []
+    new_messages = [_persisted_user_message(persisted_prompt, state)] if persisted_prompt is not None else []
     prepared = replace(
         prepared,
         tape=tape.name,
@@ -554,3 +560,31 @@ def _messages_with_system_prompt(
     messages.extend(history)
     messages.append(transient_user_message)
     return messages
+
+
+def _persisted_user_message(persisted_prompt: str, state: State) -> dict[str, object]:
+    message: dict[str, object] = {"role": "user", "content": persisted_prompt}
+    media_refs = _coerce_media_refs(state.get("_inbound_media_refs"))
+    if media_refs:
+        message[MEDIA_REFS_KEY] = media_refs
+    return message
+
+
+def _coerce_media_refs(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    refs: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        channel = item.get("channel")
+        if not isinstance(channel, str) or not channel:
+            continue
+        ref: dict[str, str] = {"channel": channel}
+        for key in ("message_id", "file_key", "resource_type", "content_type", "url", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                ref[key] = value
+        if "url" in ref or {"message_id", "file_key", "resource_type"} <= set(ref):
+            refs.append(ref)
+    return refs

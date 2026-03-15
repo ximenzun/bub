@@ -160,6 +160,7 @@ def _render_tool_result(result: object) -> str:
 
 def _sanitize_message_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     message = dict(payload)
+    message.pop("_bub_media_refs", None)
     message["content"] = _sanitize_message_content(message.get("content"))
     return message
 
