@@ -324,6 +324,7 @@ async def test_run_tools_without_persisting_prompt_keeps_new_messages_empty() ->
         tools=[],
         max_tokens=32,
         model=None,
+        state={},
         extra_options={},
     )
 
@@ -376,7 +377,7 @@ async def test_run_tools_with_transient_prompt_persists_redacted_prompt() -> Non
     ]
     tape = SimpleNamespace(
         name="test-tape",
-        context=SimpleNamespace(state={}),
+        context=SimpleNamespace(state={"_inbound_media_refs": [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]}),
         _client=_Client(),
         read_messages_async=AsyncMock(return_value=[{"role": "user", "content": "hello"}]),
     )
@@ -389,6 +390,7 @@ async def test_run_tools_with_transient_prompt_persists_redacted_prompt() -> Non
         tools=[],
         max_tokens=32,
         model=None,
+        state=tape.context.state,
         extra_options={},
     )
 
@@ -396,6 +398,10 @@ async def test_run_tools_with_transient_prompt_persists_redacted_prompt() -> Non
     assert result.text == "done"
     assert captured["messages"][-1] == {"role": "user", "content": prompt}
     assert captured["prepared"].new_messages == [
-        {"role": "user", "content": "describe this\n\n[1 image omitted from tape history]"}
+        {
+            "role": "user",
+            "content": "describe this\n\n[1 image omitted from tape history]",
+            "_bub_media_refs": [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}],
+        }
     ]
     assert captured["prepared"].system_prompt == "system"

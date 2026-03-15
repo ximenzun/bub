@@ -1,6 +1,7 @@
 import asyncio
 import base64
 import mimetypes
+import re
 import sys
 from pathlib import Path
 from typing import cast
@@ -18,8 +19,13 @@ from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
 from bub.social.types import Attachment
 from bub.types import Envelope, MessageHandler, State
+from bub.utils import workspace_from_state
 
 AGENTS_FILE_NAME = "AGENTS.md"
+IMAGE_REFERENCE_RE = re.compile(
+    r"(上(图|面图|面图片|张图|张图片)|这(图|张图|张图片)|图片内容|图里|截图|看图|识别图片|分析图片|ocr|image above|picture above|this image|the image|screenshot)",
+    re.IGNORECASE,
+)
 DEFAULT_SYSTEM_PROMPT = """\
 <general_instruct>
 Call tools or skills to finish the task.
@@ -117,17 +123,33 @@ class BuiltinImpl:
 
         media = field_of(message, "media") or []
         attachments = field_of(message, "attachments") or []
+        state.pop("_inbound_media_parts", None)
+        state.pop("_inbound_media_refs", None)
         if not media and not attachments:
+            if _should_restore_recent_image(content):
+                recent_refs = await _recent_image_refs(self.agent, session_id=session_id, state=state)
+                restored_parts = await _image_parts_from_refs(recent_refs)
+                if restored_parts:
+                    state["_inbound_media_parts"] = _clone_image_parts(restored_parts)
+                    state["_inbound_media_refs"] = _clone_media_refs(recent_refs)
+                    return [{"type": "text", "text": text}, *restored_parts]
             state.pop("_inbound_media_parts", None)
             return text
 
         media_parts = await _image_parts_from_media(cast("list[MediaItem]", media))
         if not media_parts:
             media_parts = await _image_parts_from_attachments(cast("list[Attachment]", attachments))
+        media_refs = _message_media_refs(message)
         if media_parts:
+            if media_refs:
+                state["_inbound_media_refs"] = _clone_media_refs(media_refs)
+            if _is_image_only_content(content):
+                text = (
+                    f"{text}\n\nThe user sent an image without additional text. "
+                    "Describe the image briefly and ask what they want next."
+                )
             state["_inbound_media_parts"] = _clone_image_parts(media_parts)
             return [{"type": "text", "text": text}, *media_parts]
-        state.pop("_inbound_media_parts", None)
         return text
 
     @hookimpl
@@ -328,6 +350,144 @@ def _clone_image_parts(parts: list[dict[str, object]]) -> list[dict[str, object]
             continue
         clones.append({"type": "image_url", "image_url": {"url": url}})
     return clones
+
+
+def _clone_media_refs(refs: list[dict[str, str]]) -> list[dict[str, str]]:
+    return [dict(ref) for ref in refs]
+
+
+def _message_media_refs(message: ChannelMessage) -> list[dict[str, str]]:
+    refs: list[dict[str, str]] = []
+    for attachment in message.attachments:
+        ref = _media_ref_from_attachment(attachment, channel=message.channel)
+        if ref is not None:
+            refs.append(ref)
+    return refs
+
+
+def _media_ref_from_attachment(attachment: Attachment, *, channel: str) -> dict[str, str] | None:
+    if not attachment.content_type.startswith("image/"):
+        return None
+    ref: dict[str, str] = {"channel": channel, "content_type": attachment.content_type}
+    if attachment.name:
+        ref["name"] = attachment.name
+    if attachment.url:
+        ref["url"] = attachment.url
+        return ref
+    if attachment.file_key:
+        ref["file_key"] = attachment.file_key
+    metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
+    for key in ("message_id", "resource_type"):
+        value = metadata.get(key)
+        if isinstance(value, str) and value:
+            ref[key] = value
+    if {"message_id", "file_key", "resource_type"} <= set(ref):
+        return ref
+    return None
+
+
+def _should_restore_recent_image(content: str) -> bool:
+    return bool(IMAGE_REFERENCE_RE.search(content.strip()))
+
+
+def _is_image_only_content(content: str) -> bool:
+    normalized = content.strip().lower()
+    return normalized in {"[lark image]", "[image]", "[telegram photo]", "[telegram image]"}
+
+
+async def _recent_image_refs(agent: Agent, *, session_id: str, state: State) -> list[dict[str, str]]:
+    tape = agent.tapes.session_tape(session_id, workspace_from_state(state))
+    entries = list(await tape.query_async.all())
+    for entry in reversed(entries):
+        if entry.kind == "anchor":
+            break
+        if entry.kind != "message":
+            continue
+        payload = entry.payload
+        if not isinstance(payload, dict) or payload.get("role") != "user":
+            continue
+        refs = payload.get("_bub_media_refs")
+        if isinstance(refs, list):
+            coerced = _coerce_media_refs(refs)
+            if coerced:
+                return coerced
+    return []
+
+
+def _coerce_media_refs(raw: object) -> list[dict[str, str]]:
+    if not isinstance(raw, list):
+        return []
+    refs: list[dict[str, str]] = []
+    for item in raw:
+        if not isinstance(item, dict):
+            continue
+        channel = item.get("channel")
+        if not isinstance(channel, str) or not channel:
+            continue
+        ref: dict[str, str] = {"channel": channel}
+        for key in ("message_id", "file_key", "resource_type", "content_type", "url", "name"):
+            value = item.get(key)
+            if isinstance(value, str) and value:
+                ref[key] = value
+        if "url" in ref or {"message_id", "file_key", "resource_type"} <= set(ref):
+            refs.append(ref)
+    return refs
+
+
+async def _image_parts_from_refs(refs: list[dict[str, str]]) -> list[dict[str, object]]:
+    parts: list[dict[str, object]] = []
+    for ref in refs:
+        part = await _image_part_from_ref(ref)
+        if part is not None:
+            parts.append(part)
+    return parts
+
+
+async def _image_part_from_ref(ref: dict[str, str]) -> dict[str, object] | None:
+    if ref.get("channel") != "lark":
+        url = ref.get("url")
+        if isinstance(url, str) and url.startswith("data:image/"):
+            return {"type": "image_url", "image_url": {"url": url}}
+        return None
+    if ref.get("resource_type") != "image":
+        return None
+    message_id = ref.get("message_id")
+    file_key = ref.get("file_key")
+    if not message_id or not file_key:
+        return None
+    return await asyncio.to_thread(_fetch_lark_image_part_sync, ref, message_id, file_key)
+
+
+def _fetch_lark_image_part_sync(ref: dict[str, str], message_id: str, file_key: str) -> dict[str, object] | None:
+    try:
+        from bub_lark.tools.common import coerce_binary_payload, ensure_lark_success, get_lark_client, get_lark_settings
+        from lark_oapi.api.im.v1.model.get_message_resource_request import GetMessageResourceRequest
+    except ImportError:
+        return None
+
+    settings = get_lark_settings()
+    request = (
+        GetMessageResourceRequest.builder()
+        .message_id(message_id)
+        .file_key(file_key)
+        .type("image")
+        .build()
+    )
+    response = get_lark_client().im.v1.message_resource.get(request)
+    ensure_lark_success(response, "im.fetch_resource")
+    payload = getattr(response, "file", None)
+    if payload is None:
+        raw = getattr(response, "raw", None)
+        payload = getattr(raw, "content", None) if raw is not None else None
+    if payload is None:
+        return None
+    content = coerce_binary_payload(payload)
+    if len(content) > settings.download_max_bytes:
+        return None
+    raw = getattr(response, "raw", None)
+    headers = getattr(raw, "headers", {}) if raw is not None else {}
+    mime_type = headers.get("Content-Type") if isinstance(headers, dict) else None
+    return _image_url_part(mime_type or ref.get("content_type") or "image/jpeg", content)
 
 
 def _attachment_source(attachment: Attachment) -> str | None:

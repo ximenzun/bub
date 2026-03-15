@@ -5,9 +5,10 @@ from types import SimpleNamespace
 
 import pytest
 
+import bub.builtin.hook_impl as hook_impl_module
 from bub.builtin.hook_impl import AGENTS_FILE_NAME, DEFAULT_SYSTEM_PROMPT, BuiltinImpl
 from bub.builtin.store import FileTapeStore
-from bub.channels.message import ChannelMessage
+from bub.channels.message import ChannelMessage, MediaItem
 from bub.framework import BubFramework
 
 
@@ -114,6 +115,49 @@ async def test_build_prompt_marks_commands_and_prefixes_context(tmp_path: Path) 
     assert command_prompt == ",help"
     assert command.kind == "command"
     assert normal_prompt == f"{normal.context_str}\n---\nhello"
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_restores_recent_image_when_user_references_it(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    _, impl, _ = _build_impl(tmp_path)
+    message = ChannelMessage(session_id="s", channel="lark", chat_id="room", content="查看上面图片内容")
+    restored = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}}]
+
+    async def fake_recent(*args, **kwargs):
+        return [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
+
+    async def fake_parts(refs):
+        assert refs == [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
+        return restored
+
+    monkeypatch.setattr(hook_impl_module, "_recent_image_refs", fake_recent)
+    monkeypatch.setattr(hook_impl_module, "_image_parts_from_refs", fake_parts)
+
+    state: dict[str, object] = {}
+    prompt = await impl.build_prompt(message, session_id="s", state=state)
+
+    assert prompt == [{"type": "text", "text": f"{message.context_str}\n---\n查看上面图片内容"}, *restored]
+    assert state["_inbound_media_parts"] == restored
+    assert state["_inbound_media_refs"] == [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_adds_guidance_for_image_only_message(tmp_path: Path) -> None:
+    _, impl, _ = _build_impl(tmp_path)
+    message = ChannelMessage(
+        session_id="s",
+        channel="lark",
+        chat_id="room",
+        content="[Lark image]",
+        media=[MediaItem(type="image", mime_type="image/png", data_fetcher=_async_return(b"png"))],
+    )
+
+    prompt = await impl.build_prompt(message, session_id="s", state={})
+
+    assert isinstance(prompt, list)
+    assert "Describe the image briefly" in prompt[0]["text"]
 
 
 @pytest.mark.asyncio
@@ -261,3 +305,10 @@ def test_provide_tape_store_uses_agent_home_directory(tmp_path: Path) -> None:
 
     assert isinstance(store, FileTapeStore)
     assert store._directory == tmp_path / "tapes"
+
+
+def _async_return(value):
+    async def runner(*args, **kwargs):
+        return value
+
+    return runner
