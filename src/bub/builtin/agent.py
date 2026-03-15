@@ -32,6 +32,7 @@ CONTINUE_PROMPT = "Continue the task or respond to the channel."
 DEFAULT_BUB_HEADERS = {"HTTP-Referer": "https://bub.build/", "X-Title": "Bub"}
 HINT_RE = re.compile(r"\$([A-Za-z0-9_.-]+)")
 MEDIA_REFS_KEY = "_bub_media_refs"
+INBOUND_MESSAGE_ID_KEY = "_bub_inbound_message_id"
 
 
 class Agent:
@@ -567,6 +568,9 @@ def _persisted_user_message(persisted_prompt: str, state: State) -> dict[str, ob
     media_refs = _coerce_media_refs(state.get("_inbound_media_refs"))
     if media_refs:
         message[MEDIA_REFS_KEY] = media_refs
+    inbound_message_id = state.get("_inbound_message_id")
+    if isinstance(inbound_message_id, str) and inbound_message_id:
+        message[INBOUND_MESSAGE_ID_KEY] = inbound_message_id
     return message
 
 

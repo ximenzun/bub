@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 import pytest
 
@@ -141,6 +142,76 @@ async def test_build_prompt_restores_recent_image_when_user_references_it(
     assert prompt == [{"type": "text", "text": f"{message.context_str}\n---\n查看上面图片内容"}, *restored]
     assert state["_inbound_media_parts"] == restored
     assert state["_inbound_media_refs"] == [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_includes_quoted_message_metadata(tmp_path: Path) -> None:
+    _, impl, _ = _build_impl(tmp_path)
+    message = ChannelMessage(
+        session_id="s",
+        channel="wecom_longconn_bot",
+        chat_id="room",
+        content="帮我看一下这条引用",
+        metadata={
+            "quoted_message": {
+                "channel": "wecom_longconn_bot",
+                "text": "这是被引用的图片",
+                "attachments": [
+                    {
+                        "content_type": "image/png",
+                        "url": "data:image/png;base64,cG5n",
+                        "metadata": {"bub_scope": "quote"},
+                    }
+                ],
+            }
+        },
+    )
+
+    prompt = await impl.build_prompt(message, session_id="s", state={})
+
+    assert isinstance(prompt, list)
+    assert prompt[0]["text"] == "Quoted message:\n这是被引用的图片"
+    assert prompt[1]["image_url"]["url"] == "data:image/png;base64,cG5n"
+    assert "Current message:" in prompt[2]["text"]
+
+
+@pytest.mark.asyncio
+async def test_build_prompt_restores_lark_reply_target_from_tape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    _, impl, agent = _build_impl(tmp_path)
+    restored = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}}]
+
+    async def fake_image_parts(refs):
+        assert refs == [{"channel": "lark", "message_id": "om_parent", "file_key": "img_parent", "resource_type": "image"}]
+        return restored
+
+    tape = SimpleNamespace(
+        query_async=SimpleNamespace(
+            all=AsyncMock(
+                return_value=[
+                    SimpleNamespace(kind="anchor", payload={"name": "session/start"}),
+                    SimpleNamespace(kind="message", payload={"role": "user", "_bub_inbound_message_id": "om_parent", "content": "[Lark image]", "_bub_media_refs": [{"channel": "lark", "message_id": "om_parent", "file_key": "img_parent", "resource_type": "image"}]}),
+                ]
+            )
+        )
+    )
+
+    agent.tapes = SimpleNamespace(session_tape=lambda session_id, workspace: tape)  # type: ignore[assignment]
+    monkeypatch.setattr(hook_impl_module, "_image_parts_from_refs", fake_image_parts)
+
+    message = ChannelMessage(
+        session_id="s",
+        channel="lark",
+        chat_id="room",
+        content="看这条reply引用的图片",
+        context={"parent_id": "om_parent"},
+    )
+    state = {"_lark_parent_id": "om_parent", "_runtime_workspace": str(tmp_path)}
+
+    prompt = await impl.build_prompt(message, session_id="s", state=state)
+
+    assert isinstance(prompt, list)
+    assert prompt[0]["text"] == "Quoted message:\n[Lark image]"
+    assert prompt[1]["image_url"]["url"] == "data:image/png;base64,cG5n"
 
 
 @pytest.mark.asyncio
