@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Iterable
+import re
+from collections.abc import Iterable, Mapping
 from typing import Any, Literal, cast
 
 from republic import TapeContext, TapeEntry
@@ -16,6 +17,7 @@ TAPE_VIEW_KEY = "_tape_view"
 TAPE_ANCHOR_NAME_KEY = "_tape_anchor_name"
 TAPE_ANCHOR_STATE_KEY = "_tape_anchor_state"
 AVAILABLE_TAPE_VIEWS: tuple[TapeView, ...] = ("active", "messages", "timeline")
+DATA_URL_RE = re.compile(r"data:(?P<mime>[^;,]+);base64,(?P<data>[A-Za-z0-9+/=\s]+)", re.IGNORECASE)
 
 
 def available_tape_views() -> tuple[TapeView, ...]:
@@ -93,7 +95,7 @@ def _select_messages(entries: Iterable[TapeEntry], context: TapeContext) -> list
 def _append_message_entry(messages: list[dict[str, Any]], entry: TapeEntry) -> None:
     payload = entry.payload
     if isinstance(payload, dict):
-        messages.append(dict(payload))
+        messages.append(_sanitize_message_payload(payload))
 
 
 def _append_tool_call_entry(messages: list[dict[str, Any]], entry: TapeEntry) -> list[dict[str, Any]]:
@@ -149,11 +151,86 @@ def _normalize_tool_calls(value: object) -> list[dict[str, Any]]:
 
 def _render_tool_result(result: object) -> str:
     if isinstance(result, str):
-        return result
+        return _sanitize_tool_result_string(result)
     try:
-        return json.dumps(result, ensure_ascii=False)
+        return json.dumps(_sanitize_for_context(result), ensure_ascii=False)
     except TypeError:
-        return str(result)
+        return _sanitize_tool_result_string(str(result))
+
+
+def _sanitize_message_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
+    message = dict(payload)
+    message["content"] = _sanitize_message_content(message.get("content"))
+    return message
+
+
+def _sanitize_message_content(content: object) -> object:
+    if not isinstance(content, list):
+        return _sanitize_tool_result_string(content) if isinstance(content, str) else content
+
+    text_parts: list[str] = []
+    image_count = 0
+    sanitized_parts: list[dict[str, Any]] = []
+    for item in content:
+        if not isinstance(item, dict):
+            continue
+        part_type = item.get("type")
+        if part_type in {"text", "input_text"}:
+            text = item.get("text")
+            if isinstance(text, str) and text:
+                text_parts.append(text)
+            sanitized_parts.append(dict(item))
+            continue
+        if part_type in {"image_url", "input_image"}:
+            image_count += 1
+            continue
+        sanitized_parts.append(cast(dict[str, Any], _sanitize_for_context(item)))
+
+    if image_count == 0:
+        return sanitized_parts
+
+    omission = f"[{image_count} image{'s' if image_count != 1 else ''} omitted from tape history]"
+    text = "\n".join(part for part in text_parts if part).strip()
+    if text:
+        return f"{text}\n\n{omission}"
+    return omission
+
+
+def _sanitize_tool_result_string(result: str) -> str:
+    if ("base64" in result or "data:" in result) and result[:1] in "{[":
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return _replace_data_urls(result)
+        return json.dumps(_sanitize_for_context(parsed), ensure_ascii=False)
+    return _replace_data_urls(result)
+
+
+def _sanitize_for_context(value: object) -> object:
+    if isinstance(value, Mapping):
+        sanitized: dict[str, Any] = {}
+        for key, item in value.items():
+            if str(key).casefold() == "base64" and isinstance(item, str):
+                sanitized[str(key)] = f"[base64 omitted: {len(item)} chars]"
+                continue
+            sanitized[str(key)] = _sanitize_for_context(item)
+        return sanitized
+    if isinstance(value, list):
+        return [_sanitize_for_context(item) for item in value]
+    if isinstance(value, tuple):
+        return [_sanitize_for_context(item) for item in value]
+    if isinstance(value, str):
+        return _replace_data_urls(value)
+    return value
+
+
+def _replace_data_urls(value: str) -> str:
+    def replace(match: re.Match[str]) -> str:
+        mime_type = match.group("mime")
+        encoded = match.group("data")
+        return f"[data URL omitted: {mime_type}; {len(encoded)} chars]"
+
+    return DATA_URL_RE.sub(replace, value)
 
 
 def _prepend_anchor_state(messages: list[dict[str, Any]], context: TapeContext) -> None:
