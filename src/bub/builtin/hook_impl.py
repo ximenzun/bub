@@ -118,13 +118,16 @@ class BuiltinImpl:
         media = field_of(message, "media") or []
         attachments = field_of(message, "attachments") or []
         if not media and not attachments:
+            state.pop("_inbound_media_parts", None)
             return text
 
         media_parts = await _image_parts_from_media(cast("list[MediaItem]", media))
         if not media_parts:
             media_parts = await _image_parts_from_attachments(cast("list[Attachment]", attachments))
         if media_parts:
+            state["_inbound_media_parts"] = _clone_image_parts(media_parts)
             return [{"type": "text", "text": text}, *media_parts]
+        state.pop("_inbound_media_parts", None)
         return text
 
     @hookimpl
@@ -314,6 +317,17 @@ async def _image_parts_from_attachments(attachments: list[Attachment]) -> list[d
 def _image_url_part(mime_type: str, data: bytes) -> dict[str, object]:
     data_url = f"data:{mime_type};base64,{base64.b64encode(data).decode('utf-8')}"
     return {"type": "image_url", "image_url": {"url": data_url}}
+
+
+def _clone_image_parts(parts: list[dict[str, object]]) -> list[dict[str, object]]:
+    clones: list[dict[str, object]] = []
+    for part in parts:
+        image_url = part.get("image_url")
+        url = image_url.get("url") if isinstance(image_url, dict) else None
+        if part.get("type") != "image_url" or not isinstance(url, str) or not url:
+            continue
+        clones.append({"type": "image_url", "image_url": {"url": url}})
+    return clones
 
 
 def _attachment_source(attachment: Attachment) -> str | None:

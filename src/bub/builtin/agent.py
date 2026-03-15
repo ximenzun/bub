@@ -8,9 +8,9 @@ import re
 import shlex
 import time
 from collections.abc import Collection
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import UTC, datetime
-from functools import cached_property
+from functools import cached_property, partial
 from pathlib import Path
 from typing import Any
 
@@ -130,7 +130,7 @@ class Agent:
         for step in range(1, self.settings.max_steps + 1):
             start = time.monotonic()
             logger.info("loop.step step={} tape={} model={}", step, tape.name, display_model)
-            await self.tapes.append_event(tape.name, "loop.step.start", {"step": step, "prompt": next_prompt})
+            await self.tapes.append_event(tape.name, "loop.step.start", {"step": step, "prompt": _event_prompt(next_prompt)})
             try:
                 output = await self._run_tools_once(
                     tape=tape,
@@ -225,11 +225,33 @@ class Agent:
             tools = [tool for tool in REGISTRY.values() if tool.name.casefold() in allowed_tools]
         else:
             tools = list(REGISTRY.values())
+        system_prompt = self._system_prompt(prompt_text, state=tape.context.state, allowed_skills=allowed_skills)
         normalized_prompt = _normalize_prompt_for_api_format(prompt, self.settings.api_format)
         async with asyncio.timeout(self.settings.model_timeout_seconds):
+            if _is_internal_continue_prompt(prompt):
+                return await _run_tools_without_persisting_prompt(
+                    tape=tape,
+                    prompt=normalized_prompt,
+                    system_prompt=system_prompt,
+                    tools=model_tools(tools),
+                    max_tokens=self.settings.max_tokens,
+                    model=model,
+                    extra_options=extra_options,
+                )
+            if _prompt_contains_image_parts(normalized_prompt):
+                return await _run_tools_with_transient_prompt(
+                    tape=tape,
+                    prompt=normalized_prompt,
+                    persisted_prompt=_prompt_for_tape(prompt),
+                    system_prompt=system_prompt,
+                    tools=model_tools(tools),
+                    max_tokens=self.settings.max_tokens,
+                    model=model,
+                    extra_options=extra_options,
+                )
             return await tape.run_tools_async(
                 prompt=normalized_prompt,
-                system_prompt=self._system_prompt(prompt_text, state=tape.context.state, allowed_skills=allowed_skills),
+                system_prompt=system_prompt,
                 max_tokens=self.settings.max_tokens,
                 tools=model_tools(tools),
                 model=model,
@@ -323,27 +345,33 @@ def _extract_text_from_parts(parts: list[dict]) -> str:
 
 def _continue_prompt(state: State) -> str | list[dict[str, object]]:
     prompt_text = f"{CONTINUE_PROMPT} [context: {state['context']}]" if "context" in state else CONTINUE_PROMPT
-    media_parts = _pop_pending_tool_media_parts(state)
+    media_parts = _persistent_inbound_media_parts(state) + _pop_pending_tool_media_parts(state)
     if not media_parts:
         return prompt_text
     return [{"type": "text", "text": prompt_text}, *media_parts]
 
 
+def _persistent_inbound_media_parts(state: State) -> list[dict[str, object]]:
+    return _coerce_image_parts(state.get("_inbound_media_parts"))
+
+
 def _pop_pending_tool_media_parts(state: State) -> list[dict[str, object]]:
-    raw = state.pop("_tool_media_parts", None)
+    return _coerce_image_parts(state.pop("_tool_media_parts", None))
+
+
+def _coerce_image_parts(raw: object) -> list[dict[str, object]]:
     if not isinstance(raw, list):
         return []
     parts: list[dict[str, object]] = []
     for item in raw:
         if not isinstance(item, dict):
             continue
-        if item.get("type") != "image_url":
-            continue
+        part_type = item.get("type")
         image_url = item.get("image_url")
-        if not isinstance(image_url, dict):
-            continue
-        url = image_url.get("url")
+        url = image_url.get("url") if isinstance(image_url, dict) else image_url
         if not isinstance(url, str) or not url:
+            continue
+        if part_type not in {"image_url", "input_image"}:
             continue
         parts.append({"type": "image_url", "image_url": {"url": url}})
     return parts
@@ -381,3 +409,148 @@ def _normalize_prompt_part_for_responses(part: dict[str, object]) -> dict[str, o
             return {"type": "input_image", "image_url": url, "detail": "auto"}
         return None
     return dict(part)
+
+
+def _prompt_contains_image_parts(prompt: str | list[dict[str, object]]) -> bool:
+    if isinstance(prompt, str):
+        return False
+    return any(isinstance(part, dict) and part.get("type") in {"image_url", "input_image"} for part in prompt)
+
+
+def _prompt_for_tape(prompt: str | list[dict[str, object]]) -> str:
+    if isinstance(prompt, str):
+        return prompt
+    text = _extract_text_from_parts(prompt).strip()
+    image_count = sum(
+        1 for part in prompt if isinstance(part, dict) and part.get("type") in {"image_url", "input_image"}
+    )
+    if image_count == 0:
+        return text
+    omission = f"[{image_count} image{'s' if image_count != 1 else ''} omitted from tape history]"
+    if text:
+        return f"{text}\n\n{omission}"
+    return omission
+
+
+def _is_internal_continue_prompt(prompt: str | list[dict[str, object]]) -> bool:
+    if isinstance(prompt, str):
+        return prompt.startswith(CONTINUE_PROMPT)
+    if not prompt:
+        return False
+    first = prompt[0]
+    if not isinstance(first, dict):
+        return False
+    text = first.get("text")
+    return isinstance(text, str) and text.startswith(CONTINUE_PROMPT)
+
+
+def _event_prompt(prompt: str | list[dict[str, object]]) -> str | list[dict[str, object]]:
+    if isinstance(prompt, str):
+        return prompt
+    summary: list[dict[str, object]] = []
+    for part in prompt:
+        if not isinstance(part, dict):
+            continue
+        part_type = part.get("type")
+        if part_type in {"image_url", "input_image"}:
+            summary.append({"type": str(part_type), "redacted": True})
+            continue
+        summary.append(dict(part))
+    return summary
+
+
+async def _run_tools_without_persisting_prompt(
+    *,
+    tape: Tape,
+    prompt: str | list[dict[str, object]],
+    system_prompt: str,
+    tools: list[Any],
+    max_tokens: int,
+    model: str | None,
+    extra_options: dict[str, object],
+) -> ToolAutoResult:
+    return await _run_tools_with_transient_prompt(
+        tape=tape,
+        prompt=prompt,
+        persisted_prompt=None,
+        system_prompt=system_prompt,
+        tools=tools,
+        max_tokens=max_tokens,
+        model=model,
+        extra_options=extra_options,
+    )
+
+
+async def _run_tools_with_transient_prompt(
+    *,
+    tape: Tape,
+    prompt: str | list[dict[str, object]],
+    persisted_prompt: str | None,
+    system_prompt: str,
+    tools: list[Any],
+    max_tokens: int,
+    model: str | None,
+    extra_options: dict[str, object],
+) -> ToolAutoResult:
+    history = await tape.read_messages_async()
+    transient_user_message = {"role": "user", "content": prompt}
+    messages = _messages_with_system_prompt(history, system_prompt, transient_user_message)
+    client = getattr(tape, "_client", None)
+    prepare_request = getattr(client, "_prepare_request_async", None)
+    execute = getattr(client, "_execute_async", None)
+    if (
+        client is None
+        or not callable(prepare_request)
+        or not callable(execute)
+        or not inspect.iscoroutinefunction(prepare_request)
+        or not inspect.iscoroutinefunction(execute)
+    ):
+        return await tape.run_tools_async(
+            prompt=prompt,
+            system_prompt=system_prompt,
+            max_tokens=max_tokens,
+            tools=tools,
+            model=model,
+            **extra_options,
+        )
+    prepared = await prepare_request(
+        prompt=None,
+        system_prompt=None,
+        messages=messages,
+        tape=None,
+        context=tape.context,
+        tools=tools,
+        require_tools=True,
+        require_runnable=True,
+    )
+    new_messages = [{"role": "user", "content": persisted_prompt}] if persisted_prompt is not None else []
+    prepared = replace(
+        prepared,
+        tape=tape.name,
+        should_update=True,
+        new_messages=new_messages,
+        system_prompt=system_prompt if new_messages else None,
+    )
+    return await execute(
+        prepared,
+        tools_payload=prepared.toolset.payload,
+        model=model,
+        provider=None,
+        max_tokens=max_tokens,
+        stream=False,
+        kwargs=dict(extra_options),
+        on_response=partial(client._handle_tools_auto_response_async, prepared),
+    )
+
+
+def _messages_with_system_prompt(
+    history: list[dict[str, Any]],
+    system_prompt: str,
+    transient_user_message: dict[str, object],
+) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    if system_prompt:
+        messages.append({"role": "system", "content": system_prompt})
+    messages.extend(history)
+    messages.append(transient_user_message)
+    return messages

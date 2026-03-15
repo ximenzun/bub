@@ -279,6 +279,7 @@ async def test_build_prompt_returns_string_without_media(tmp_path: Path) -> None
 @pytest.mark.asyncio
 async def test_build_prompt_returns_multimodal_parts_with_image_media(tmp_path: Path) -> None:
     _, impl = _build_impl(tmp_path)
+    state: dict[str, object] = {}
     message = ChannelMessage(
         session_id="s",
         channel="tg",
@@ -286,7 +287,7 @@ async def test_build_prompt_returns_multimodal_parts_with_image_media(tmp_path: 
         media=[MediaItem(type="image", mime_type="image/jpeg", data_fetcher=_async_return(b"\xff\xd8"))],
     )
 
-    result = await impl.build_prompt(message, session_id="s", state={})
+    result = await impl.build_prompt(message, session_id="s", state=state)
 
     assert isinstance(result, list)
     assert len(result) == 2
@@ -299,6 +300,7 @@ async def test_build_prompt_returns_multimodal_parts_with_image_media(tmp_path: 
     assert image_part["type"] == "image_url"
     expected = base64.b64encode(b"\xff\xd8").decode("utf-8")
     assert image_part["image_url"]["url"] == f"data:image/jpeg;base64,{expected}"
+    assert state["_inbound_media_parts"] == [image_part]
 
 
 @pytest.mark.asyncio
