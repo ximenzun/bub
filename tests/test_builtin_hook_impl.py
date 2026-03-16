@@ -81,7 +81,7 @@ async def test_load_state_and_save_state_manage_lifespan_and_context(tmp_path: P
     assert lifespan.entered is True
     assert state["session_id"] == "resolved-session"
     assert state["_runtime_agent"] is impl.agent
-    assert state["context"] == message.context_str
+    assert "context" not in state
     assert state["_inbound_channel"] == "cli"
     assert state["_inbound_chat_id"] == "room"
     assert state["_inbound_message_id"] == "m-1"
@@ -115,7 +115,7 @@ async def test_build_prompt_marks_commands_and_prefixes_context(tmp_path: Path) 
 
     assert command_prompt == ",help"
     assert command.kind == "command"
-    assert normal_prompt == f"{normal.context_str}\n---\nhello"
+    assert normal_prompt == "hello"
 
 
 @pytest.mark.asyncio
@@ -139,7 +139,7 @@ async def test_build_prompt_restores_recent_image_when_user_references_it(
     state: dict[str, object] = {}
     prompt = await impl.build_prompt(message, session_id="s", state=state)
 
-    assert prompt == [{"type": "text", "text": f"{message.context_str}\n---\n查看上面图片内容"}, *restored]
+    assert prompt == [{"type": "text", "text": "查看上面图片内容"}, *restored]
     assert state["_inbound_media_parts"] == restored
     assert state["_inbound_media_refs"] == [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
 

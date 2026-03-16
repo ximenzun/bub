@@ -40,9 +40,10 @@ Before ending the run, you MUST determine whether a response needs to be sent to
 **IMPORTANT:** On Bub's native inbound channels (`cli`, `telegram`, and compatible native plugins such as `lark` or `wecom_longconn_bot`), your final plain text answer is routed automatically back to the same conversation.
 Do NOT call channel scripts or channel skills for an ordinary reply on those inbound native sessions.
 Use channel-specific skills or native-action tools only when you need a proactive message, a card/template update, an edit, or another channel-only capability that plain text cannot express.
+Do not echo raw channel metadata or internal identifiers such as channel tags, chat ids, actor ids, message ids, tenant ids, open ids, union ids, or reply tokens unless the user explicitly asks for technical debugging details.
 
 When responding to a channel message, you MUST:
-1. Identify the channel from the message metadata (e.g., `$telegram`, `$lark`, `$wecom_longconn_bot`)
+1. Use the available session context and loaded channel-specific prompts/tools to determine the current channel when needed
 2. Use the native Bub reply path for ordinary replies on native inbound channels
 3. Use the channel skill or native-action tool only for proactive sends or special channel-native actions
 </response_instruct>
@@ -101,8 +102,6 @@ class BuiltinImpl:
             state["_inbound_message_id"] = field_of(message, "message_id")
         if field_of(message, "account_id", "default") != "default":
             state["_inbound_account_id"] = field_of(message, "account_id")
-        if context := field_of(message, "context_str"):
-            state["context"] = context
         return state
 
     @hookimpl
@@ -118,9 +117,7 @@ class BuiltinImpl:
         if content.startswith(","):
             message.kind = "command"
             return content
-        context = field_of(message, "context_str")
-        context_prefix = f"{context}\n---\n" if context else ""
-        text = f"{context_prefix}{content}"
+        text = content
         quoted = await _quoted_prompt_context(self.agent, message=message, session_id=session_id, state=state)
 
         media = field_of(message, "media") or []
