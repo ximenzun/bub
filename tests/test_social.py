@@ -21,6 +21,7 @@ def test_channel_message_infers_conversation_from_channel_and_chat_id() -> None:
     message = ChannelMessage(session_id="s", channel="telegram", chat_id="42", content="hello")
 
     assert message.conversation == ConversationRef(platform="telegram", chat_id="42", account_id="default")
+    assert message.context_str == ""
 
 
 def test_outbound_actions_of_defaults_to_reply_message_when_reply_grant_present() -> None:

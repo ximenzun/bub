@@ -9,6 +9,7 @@ from bub.social.types import Attachment, ConversationRef, OutboundAction, Partic
 
 type MessageKind = Literal["error", "normal", "command"]
 type MediaType = Literal["image", "audio", "video", "document"]
+PROMPT_SAFE_CONTEXT_KEYS = ("surface", "chat_type")
 
 
 @dataclass
@@ -100,8 +101,18 @@ class ChannelMessage:
 
     @property
     def context_str(self) -> str:
-        """String representation of the context for prompt building."""
-        return "|".join(f"{key}={value}" for key, value in self.context.items())
+        """Prompt-safe context summary.
+
+        Raw channel/session identifiers stay in ``context`` for channel adapters and tools,
+        but they are intentionally excluded from the model-facing prompt summary.
+        """
+
+        items = [
+            f"{key}={value}"
+            for key, value in self.context.items()
+            if key in PROMPT_SAFE_CONTEXT_KEYS and value not in (None, "")
+        ]
+        return "|".join(items)
 
     @classmethod
     def from_batch(cls, batch: list[ChannelMessage]) -> ChannelMessage:
