@@ -221,7 +221,8 @@ class BuiltinImpl:
         state: State,
         model_output: str,
     ) -> list[ChannelMessage]:
-        del state
+        if state.get('_suppress_default_outbound'):
+            return []
         return [
             self._build_outbound_message(
                 message=message,

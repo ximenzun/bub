@@ -176,6 +176,8 @@ class BubFramework:
             outbounds.extend(unpack_batch(batch))
         if outbounds:
             return outbounds
+        if state.get("_suppress_default_outbound") or state.get("_suppress_fallback_outbound"):
+            return []
 
         fallback: dict[str, Any] = {
             "content": model_output,

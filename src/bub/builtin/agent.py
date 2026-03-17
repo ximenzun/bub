@@ -69,14 +69,18 @@ class Agent:
             await self.tapes.ensure_bootstrap_anchor(tape.name)
             await self.tapes.hydrate_context(tape, runtime_state=state)
             if isinstance(prompt, str) and prompt.strip().startswith(","):
-                return await self._run_command(tape=tape, line=prompt.strip())
-            return await self._agent_loop(
+                result = await self._run_command(tape=tape, line=prompt.strip())
+                state.update(tape.context.state)
+                return result
+            result = await self._agent_loop(
                 tape=tape,
                 prompt=prompt,
                 model=model,
                 allowed_skills=allowed_skills,
                 allowed_tools=allowed_tools,
             )
+            state.update(tape.context.state)
+            return result
 
     async def _run_command(self, tape: Tape, *, line: str) -> str:
         line = line[1:].strip()
