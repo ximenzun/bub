@@ -141,6 +141,6 @@ def test_provisioning_and_credentials_cover_wecom_long_connection_bot_shape() ->
 
 
 def test_mention_target_supports_wecom_mobile_mentions() -> None:
-    mention = MentionTarget(kind="mobile", value="13800001111", label="oncall")
+    mention = MentionTarget(kind="mobile", value="00000001111", label="oncall")
 
-    assert mention.as_dict() == {"kind": "mobile", "value": "13800001111", "label": "oncall"}
+    assert mention.as_dict() == {"kind": "mobile", "value": "00000001111", "label": "oncall"}

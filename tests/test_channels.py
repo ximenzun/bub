@@ -592,7 +592,7 @@ async def test_telegram_message_parser_extracts_formatted_links() -> None:
         ],
         caption_entities=[],
         message_id=1,
-        from_user=SimpleNamespace(username="alice", full_name="Alice", id=7, is_bot=False),
+        from_user=SimpleNamespace(username="test_user", full_name="Test User", id=7, is_bot=False),
         date=datetime(2026, 3, 11),
     )
 
@@ -611,7 +611,7 @@ async def test_telegram_message_parser_extracts_links_from_caption_entities() ->
         entities=[],
         caption_entities=[SimpleNamespace(type="text_link", url="https://portal.example.com")],
         message_id=2,
-        from_user=SimpleNamespace(username="alice", full_name="Alice", id=7, is_bot=False),
+        from_user=SimpleNamespace(username="test_user", full_name="Test User", id=7, is_bot=False),
         date=datetime(2026, 3, 11),
         photo=[SimpleNamespace(file_id="file-1", file_size=3, width=1, height=1)],
     )
