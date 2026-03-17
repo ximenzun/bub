@@ -383,3 +383,33 @@ def _async_return(value):
         return value
 
     return runner
+
+
+
+def test_render_outbound_returns_empty_when_suppressed(tmp_path: Path) -> None:
+    _, impl, _ = _build_impl(tmp_path)
+    message = ChannelMessage(session_id='s', channel='cli', chat_id='room', content='hello')
+
+    rendered = impl.render_outbound(message=message, session_id='s', state={'_suppress_default_outbound': True}, model_output='ignored')
+
+    assert rendered == []
+
+
+@pytest.mark.asyncio
+async def test_framework_collect_outbounds_returns_empty_when_fallback_is_suppressed() -> None:
+    framework = BubFramework()
+
+    async def call_many(name: str, **kwargs: object) -> list[object]:
+        assert name == 'render_outbound'
+        return []
+
+    framework._hook_runtime.call_many = call_many  # type: ignore[method-assign]
+
+    outbounds = await framework._collect_outbounds(
+        message={'channel': 'lark', 'chat_id': 'oc_123'},
+        session_id='lark:acct:oc_123:main',
+        state={'_suppress_default_outbound': True},
+        model_output='{"ok": true}',
+    )
+
+    assert outbounds == []
