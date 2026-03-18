@@ -8,6 +8,7 @@ import pytest
 
 import bub.builtin.hook_impl as hook_impl_module
 from bub.builtin.hook_impl import AGENTS_FILE_NAME, DEFAULT_SYSTEM_PROMPT, BuiltinImpl
+from bub.builtin.resource_refs import RESOURCE_REFS_KEY
 from bub.builtin.store import FileTapeStore
 from bub.channels.message import ChannelMessage, MediaItem
 from bub.framework import BubFramework
@@ -125,12 +126,26 @@ async def test_build_prompt_restores_recent_image_when_user_references_it(
     _, impl, _ = _build_impl(tmp_path)
     message = ChannelMessage(session_id="s", channel="lark", chat_id="room", content="查看上面图片内容")
     restored = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}}]
+    recent_refs = [
+        {
+            "kind": "image",
+            "scope": "message",
+            "content_type": "image/*",
+            "locator": {
+                "kind": "channel_file",
+                "channel": "lark",
+                "message_id": "om_1",
+                "file_key": "img_1",
+                "resource_type": "image",
+            },
+        }
+    ]
 
     async def fake_recent(*args, **kwargs):
-        return [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
+        return recent_refs
 
     async def fake_parts(refs):
-        assert refs == [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
+        assert refs == recent_refs
         return restored
 
     monkeypatch.setattr(hook_impl_module, "_recent_image_refs", fake_recent)
@@ -141,7 +156,10 @@ async def test_build_prompt_restores_recent_image_when_user_references_it(
 
     assert prompt == [{"type": "text", "text": "查看上面图片内容"}, *restored]
     assert state["_inbound_media_parts"] == restored
-    assert state["_inbound_media_refs"] == [{"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image"}]
+    assert state["_inbound_resource_refs"] == recent_refs
+    assert state["_inbound_media_refs"] == [
+        {"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image", "content_type": "image/*"}
+    ]
 
 
 @pytest.mark.asyncio
@@ -181,7 +199,20 @@ async def test_build_prompt_restores_lark_reply_target_from_tape(tmp_path: Path,
     restored = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}}]
 
     async def fake_image_parts(refs):
-        assert refs == [{"channel": "lark", "message_id": "om_parent", "file_key": "img_parent", "resource_type": "image"}]
+        assert refs == [
+            {
+                "kind": "image",
+                "scope": "message",
+                "content_type": "image/*",
+                "locator": {
+                    "kind": "channel_file",
+                    "channel": "lark",
+                    "message_id": "om_parent",
+                    "file_key": "img_parent",
+                    "resource_type": "image",
+                },
+            }
+        ]
         return restored
 
     tape = SimpleNamespace(
@@ -189,7 +220,28 @@ async def test_build_prompt_restores_lark_reply_target_from_tape(tmp_path: Path,
             all=AsyncMock(
                 return_value=[
                     SimpleNamespace(kind="anchor", payload={"name": "session/start"}),
-                    SimpleNamespace(kind="message", payload={"role": "user", "_bub_inbound_message_id": "om_parent", "content": "[Lark image]", "_bub_media_refs": [{"channel": "lark", "message_id": "om_parent", "file_key": "img_parent", "resource_type": "image"}]}),
+                    SimpleNamespace(
+                        kind="message",
+                        payload={
+                            "role": "user",
+                            "_bub_inbound_message_id": "om_parent",
+                            "content": "[Lark image]",
+                            RESOURCE_REFS_KEY: [
+                                {
+                                    "kind": "image",
+                                    "scope": "message",
+                                    "content_type": "image/*",
+                                    "locator": {
+                                        "kind": "channel_file",
+                                        "channel": "lark",
+                                        "message_id": "om_parent",
+                                        "file_key": "img_parent",
+                                        "resource_type": "image",
+                                    },
+                                }
+                            ],
+                        },
+                    ),
                 ]
             )
         )

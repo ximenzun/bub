@@ -16,6 +16,7 @@ from bub.builtin.context import (
     build_tape_context,
     default_tape_context,
     restore_tape_state,
+    select_messages_and_resources,
 )
 from bub.builtin.store import ForkTapeStore
 
@@ -50,6 +51,7 @@ class TapeContextSnapshot:
     anchor: str | None
     state: dict[str, object]
     messages: list[dict[str, object]]
+    resources: list[dict[str, object]]
 
 
 class TapeService:
@@ -173,7 +175,8 @@ class TapeService:
         )
         read_anchor = None if view == "timeline" else build_tape_context().anchor
         tape = self._llm.tape(tape_name, context=build_tape_context(state=merged_state, view=view, anchor=read_anchor))
-        messages = cast(list[dict[str, object]], await tape.read_messages_async())
+        entries = _entries_for_view(list(await tape.query_async.all()), view=view)
+        messages, resources = select_messages_and_resources(entries, tape.context)
         visible_state = cast(dict[str, object], dict(anchor.state) if anchor else {})
         return TapeContextSnapshot(
             name=tape_name,
@@ -181,9 +184,22 @@ class TapeService:
             anchor=anchor.name if anchor else None,
             state=visible_state,
             messages=messages,
+            resources=resources,
         )
 
     @contextlib.asynccontextmanager
     async def fork_tape(self, tape_name: str, merge_back: bool = True) -> AsyncGenerator[None, None]:
         async with self._store.fork(tape_name, merge_back=merge_back):
             yield
+
+
+def _entries_for_view(entries: list[TapeEntry], *, view: TapeView) -> list[TapeEntry]:
+    if view == "timeline":
+        return entries
+    last_anchor_index = None
+    for index, entry in enumerate(entries):
+        if entry.kind == "anchor":
+            last_anchor_index = index
+    if last_anchor_index is None:
+        return entries
+    return entries[last_anchor_index + 1 :]

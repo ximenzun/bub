@@ -16,6 +16,7 @@ from bub.builtin.context import (
     TapeView,
     available_tape_views,
 )
+from bub.builtin.resource_refs import summarize_resource_ref
 from bub.builtin.shell_manager import shell_manager
 from bub.commands import SlashCommandSpec
 from bub.skills import discover_skills
@@ -263,6 +264,7 @@ async def tape_view(param: TapeViewInput, *, context: ToolContext) -> str:
         f"view: {snapshot.view}",
         f"anchor: {snapshot.anchor}",
         f"messages: {len(snapshot.messages)}",
+        f"resources: {len(snapshot.resources)}",
     ]
     if snapshot.state:
         lines.append(f"anchor_state: {json.dumps(snapshot.state, ensure_ascii=False, sort_keys=True, default=str)}")
@@ -285,8 +287,30 @@ async def tape_context(param: TapeViewInput, *, context: ToolContext) -> str:
         f"view: {snapshot.view}\n"
         f"anchor: {snapshot.anchor}\n"
         f"messages: {len(snapshot.messages)}\n"
+        f"resources: {len(snapshot.resources)}\n"
         f"anchor_state: {json.dumps(snapshot.state, ensure_ascii=False, sort_keys=True, default=str)}"
     )
+
+
+@tool(context=True, name="tape.resources", model=TapeViewInput)
+async def tape_resources(param: TapeViewInput, *, context: ToolContext) -> str:
+    """List structured tape resource summaries for the selected view."""
+    agent = _get_agent(context)
+    snapshot = await agent.tapes.context_snapshot(
+        context.tape or "",
+        view=param.view,
+        runtime_state=context.state,
+    )
+    resources = snapshot.resources[-param.limit :]
+    lines = [
+        f"name: {snapshot.name}",
+        f"view: {snapshot.view}",
+        f"anchor: {snapshot.anchor}",
+        f"resources: {len(snapshot.resources)}",
+        "---",
+    ]
+    lines.extend(json.dumps(summarize_resource_ref(resource), ensure_ascii=False, default=str) for resource in resources)
+    return "\n".join(lines)
 
 
 @tool(name="web.fetch")
@@ -346,6 +370,7 @@ def show_help() -> str:
         "  ,tape.anchors\n"
         "  ,tape.view view=active\n"
         "  ,tape.context view=timeline\n"
+        "  ,tape.resources view=active\n"
         "  ,fs.read path=README.md\n"
         "  ,fs.write path=tmp.txt content='hello'\n"
         "  ,fs.edit path=tmp.txt old=hello new=world\n"

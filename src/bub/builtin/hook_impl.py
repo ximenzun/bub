@@ -13,6 +13,13 @@ from loguru import logger
 from republic.tape import TapeStore
 
 from bub.builtin.agent import Agent
+from bub.builtin.resource_refs import (
+    LEGACY_MEDIA_REFS_KEY,
+    RESOURCE_REFS_KEY,
+    ResourceRef,
+    clone_resource_refs,
+    coerce_resource_refs,
+)
 from bub.channels.base import Channel
 from bub.channels.message import ChannelMessage, MediaItem, MessageKind
 from bub.envelope import content_of, field_of
@@ -124,23 +131,26 @@ class BuiltinImpl:
         attachments = field_of(message, "attachments") or []
         state.pop("_inbound_media_parts", None)
         state.pop("_inbound_media_refs", None)
+        state.pop("_inbound_resource_refs", None)
         if not media and not attachments:
             if _should_restore_recent_image(content):
                 recent_refs = await _recent_image_refs(self.agent, session_id=session_id, state=state)
                 restored_parts = await _image_parts_from_refs(recent_refs)
                 if restored_parts:
                     state["_inbound_media_parts"] = _clone_image_parts(restored_parts)
-                    state["_inbound_media_refs"] = _clone_media_refs(recent_refs)
+                    state["_inbound_resource_refs"] = clone_resource_refs(recent_refs)
+                    state["_inbound_media_refs"] = _coerce_media_refs(recent_refs)
                     return _prompt_with_quote(text, current_image_parts=restored_parts, quoted=quoted)
             return _prompt_with_quote(text, current_image_parts=[], quoted=quoted)
 
         media_parts = await _image_parts_from_media(cast("list[MediaItem]", media))
         if not media_parts:
             media_parts = await _image_parts_from_attachments(_non_quoted_attachments(cast("list[Attachment]", attachments)))
-        media_refs = _message_media_refs(message)
+        media_refs = _message_resource_refs(message)
         if media_parts:
             if media_refs:
-                state["_inbound_media_refs"] = _clone_media_refs(media_refs)
+                state["_inbound_resource_refs"] = clone_resource_refs(media_refs)
+                state["_inbound_media_refs"] = _coerce_media_refs(media_refs)
             if _is_image_only_content(content):
                 text = (
                     f"{text}\n\nThe user sent an image without additional text. "
@@ -351,16 +361,12 @@ def _clone_image_parts(parts: list[dict[str, object]]) -> list[dict[str, object]
     return clones
 
 
-def _clone_media_refs(refs: list[dict[str, str]]) -> list[dict[str, str]]:
-    return [dict(ref) for ref in refs]
-
-
-def _message_media_refs(message: ChannelMessage) -> list[dict[str, str]]:
-    refs: list[dict[str, str]] = []
+def _message_resource_refs(message: ChannelMessage) -> list[ResourceRef]:
+    refs: list[ResourceRef] = []
     for attachment in message.attachments:
         if _attachment_scope(attachment) == "quote":
             continue
-        ref = _media_ref_from_attachment(attachment, channel=message.channel)
+        ref = _resource_ref_from_attachment(attachment, channel=message.channel)
         if ref is not None:
             refs.append(ref)
     return refs
@@ -376,23 +382,32 @@ def _non_quoted_attachments(attachments: list[Attachment]) -> list[Attachment]:
     return [attachment for attachment in attachments if _attachment_scope(attachment) != "quote"]
 
 
-def _media_ref_from_attachment(attachment: Attachment, *, channel: str) -> dict[str, str] | None:
+def _resource_ref_from_attachment(attachment: Attachment, *, channel: str) -> ResourceRef | None:
     if not attachment.content_type.startswith("image/"):
         return None
-    ref: dict[str, str] = {"channel": channel, "content_type": attachment.content_type}
+    ref: ResourceRef = {
+        "kind": "image",
+        "scope": _attachment_scope(attachment),
+        "content_type": attachment.content_type,
+    }
     if attachment.name:
         ref["name"] = attachment.name
-    if attachment.url:
-        ref["url"] = attachment.url
+    source = _attachment_source(attachment)
+    if source is not None:
+        locator_kind = "url" if "://" in source or source.startswith("data:") else "path"
+        ref["locator"] = {"kind": locator_kind, locator_kind: source}
         return ref
     if attachment.file_key:
-        ref["file_key"] = attachment.file_key
+        locator: dict[str, object] = {"kind": "channel_file", "channel": channel, "file_key": attachment.file_key}
+    else:
+        locator = {}
     metadata = attachment.metadata if isinstance(attachment.metadata, dict) else {}
     for key in ("message_id", "resource_type"):
         value = metadata.get(key)
         if isinstance(value, str) and value:
-            ref[key] = value
-    if {"message_id", "file_key", "resource_type"} <= set(ref):
+            locator[key] = value
+    if {"channel", "message_id", "file_key", "resource_type"} <= set(locator):
+        ref["locator"] = cast(dict[str, str], locator)
         return ref
     return None
 
@@ -406,7 +421,7 @@ def _is_image_only_content(content: str) -> bool:
     return normalized in {"[lark image]", "[image]", "[telegram photo]", "[telegram image]", "[wecom image]"}
 
 
-async def _recent_image_refs(agent: Agent, *, session_id: str, state: State) -> list[dict[str, str]]:
+async def _recent_image_refs(agent: Agent, *, session_id: str, state: State) -> list[ResourceRef]:
     tape = agent.tapes.session_tape(session_id, workspace_from_state(state))
     entries = list(await tape.query_async.all())
     for entry in reversed(entries):
@@ -417,26 +432,35 @@ async def _recent_image_refs(agent: Agent, *, session_id: str, state: State) -> 
         payload = entry.payload
         if not isinstance(payload, dict) or payload.get("role") != "user":
             continue
-        refs = payload.get("_bub_media_refs")
-        if isinstance(refs, list):
-            coerced = _coerce_media_refs(refs)
-            if coerced:
-                return coerced
+        refs = coerce_resource_refs(payload.get(RESOURCE_REFS_KEY, payload.get(LEGACY_MEDIA_REFS_KEY)))
+        if refs:
+            return refs
     return []
 
 
 def _coerce_media_refs(raw: object) -> list[dict[str, str]]:
-    if not isinstance(raw, list):
-        return []
+    resource_refs = coerce_resource_refs(raw)
     refs: list[dict[str, str]] = []
-    for item in raw:
-        if not isinstance(item, dict):
+    for item in resource_refs:
+        locator = item.get("locator")
+        if not isinstance(locator, dict):
             continue
-        channel = item.get("channel")
-        if not isinstance(channel, str) or not channel:
+        channel = locator.get("channel")
+        if isinstance(channel, str) and channel:
+            ref: dict[str, str] = {"channel": channel}
+        elif locator.get("kind") in {"url", "path"}:
+            ref = {"channel": "unknown"}
+        else:
             continue
-        ref: dict[str, str] = {"channel": channel}
-        for key in ("message_id", "file_key", "resource_type", "content_type", "url", "name"):
+        for key in ("message_id", "file_key", "resource_type", "url"):
+            value = locator.get(key)
+            if isinstance(value, str) and value:
+                ref[key] = value
+        if "url" not in ref:
+            path_value = locator.get("path")
+            if isinstance(path_value, str) and path_value:
+                ref["url"] = path_value
+        for key in ("content_type", "name"):
             value = item.get(key)
             if isinstance(value, str) and value:
                 ref[key] = value
@@ -445,7 +469,7 @@ def _coerce_media_refs(raw: object) -> list[dict[str, str]]:
     return refs
 
 
-async def _image_parts_from_refs(refs: list[dict[str, str]]) -> list[dict[str, object]]:
+async def _image_parts_from_refs(refs: list[ResourceRef]) -> list[dict[str, object]]:
     parts: list[dict[str, object]] = []
     for ref in refs:
         part = await _image_part_from_ref(ref)
@@ -454,25 +478,28 @@ async def _image_parts_from_refs(refs: list[dict[str, str]]) -> list[dict[str, o
     return parts
 
 
-async def _image_part_from_ref(ref: dict[str, str]) -> dict[str, object] | None:
-    if ref.get("channel") != "lark":
-        url = ref.get("url")
-        content_type = ref.get("content_type") or "image/*"
-        if isinstance(url, str):
-            data_url = await _attachment_data_url(content_type, url)
+async def _image_part_from_ref(ref: ResourceRef) -> dict[str, object] | None:
+    locator = ref.get("locator")
+    if not isinstance(locator, dict):
+        return None
+    if locator.get("kind") != "channel_file" or locator.get("channel") != "lark":
+        source = locator.get("url") or locator.get("path")
+        content_type = str(ref.get("content_type") or "image/*")
+        if isinstance(source, str):
+            data_url = await _attachment_data_url(content_type, source)
             if data_url is not None:
                 return {"type": "image_url", "image_url": {"url": data_url}}
         return None
-    if ref.get("resource_type") != "image":
+    if locator.get("resource_type") != "image":
         return None
-    message_id = ref.get("message_id")
-    file_key = ref.get("file_key")
+    message_id = locator.get("message_id")
+    file_key = locator.get("file_key")
     if not message_id or not file_key:
         return None
     return await asyncio.to_thread(_fetch_lark_image_part_sync, ref, message_id, file_key)
 
 
-def _fetch_lark_image_part_sync(ref: dict[str, str], message_id: str, file_key: str) -> dict[str, object] | None:
+def _fetch_lark_image_part_sync(ref: ResourceRef, message_id: str, file_key: str) -> dict[str, object] | None:
     try:
         from bub_lark.tools.common import coerce_binary_payload, ensure_lark_success, get_lark_client, get_lark_settings
         from lark_oapi.api.im.v1.model.get_message_resource_request import GetMessageResourceRequest
@@ -517,7 +544,7 @@ async def _quoted_prompt_context(
     if quoted is None:
         return None
     text = quoted.get("text")
-    refs = _coerce_media_refs(quoted.get("media_refs"))
+    refs = coerce_resource_refs(quoted.get("media_refs"))
     image_parts = await _image_parts_from_refs(refs)
     if not isinstance(text, str) or not text.strip():
         text = "[quoted image]" if image_parts else ""
@@ -532,7 +559,7 @@ def _quoted_from_metadata(metadata: Mapping[str, object] | None) -> dict[str, ob
     quoted = metadata.get("quoted_message")
     if not isinstance(quoted, Mapping):
         return None
-    refs: list[dict[str, str]] = []
+    refs: list[ResourceRef] = []
     raw_attachments = quoted.get("attachments")
     if isinstance(raw_attachments, list):
         for attachment in raw_attachments:
@@ -542,7 +569,7 @@ def _quoted_from_metadata(metadata: Mapping[str, object] | None) -> dict[str, ob
                 current_attachment = Attachment.from_mapping(attachment)
             else:
                 continue
-            ref = _media_ref_from_attachment(current_attachment, channel=str(quoted.get("channel") or "unknown"))
+            ref = _resource_ref_from_attachment(current_attachment, channel=str(quoted.get("channel") or "unknown"))
             if ref is not None:
                 refs.append(ref)
     return {
@@ -593,7 +620,7 @@ async def _quoted_from_tape(agent: Agent, *, session_id: str, state: State, mess
         content = payload.get("content")
         return {
             "text": _strip_context_prefix(content) if isinstance(content, str) else "",
-            "media_refs": _coerce_media_refs(payload.get("_bub_media_refs")),
+            "media_refs": coerce_resource_refs(payload.get(RESOURCE_REFS_KEY, payload.get(LEGACY_MEDIA_REFS_KEY))),
         }
     return None
 
@@ -667,7 +694,7 @@ def _parse_lark_quoted_content(
     resource_type_for_message_type,
     summarize_interactive_card,
     share_summary,
-) -> tuple[str, list[dict[str, str]]]:
+) -> tuple[str, list[ResourceRef]]:
     if message_type == "text":
         if isinstance(content, dict):
             return str(content.get("text") or "").strip(), []
@@ -703,23 +730,28 @@ def _parse_lark_post_quoted_content(
     flatten_post,
     post_resource_descriptors,
     attachment_mime_for_message_type,
-) -> tuple[str, list[dict[str, str]]]:
+) -> tuple[str, list[ResourceRef]]:
     if not isinstance(content, dict):
         return "[Lark post message]", []
     body_content = {"default": content} if "content" in content else content
     text = flatten_post(body_content).strip() or "[Lark post message]"
-    refs: list[dict[str, str]] = []
+    refs: list[ResourceRef] = []
     for resource_type, resource_content in post_resource_descriptors(body_content):
         file_key = str(resource_content.get("file_key") or resource_content.get("image_key") or "").strip()
         if not file_key:
             continue
         refs.append(
             {
-                "channel": "lark",
-                "message_id": message_id,
-                "file_key": file_key,
-                "resource_type": resource_type,
+                "kind": "image" if resource_type == "image" else "file",
+                "scope": "quote",
                 "content_type": attachment_mime_for_message_type(resource_type),
+                "locator": {
+                    "kind": "channel_file",
+                    "channel": "lark",
+                    "message_id": message_id,
+                    "file_key": file_key,
+                    "resource_type": resource_type,
+                },
             }
         )
     return text, refs
@@ -732,17 +764,23 @@ def _lark_media_refs_from_content(
     content: Mapping[str, object],
     attachment_mime_for_message_type,
     resource_type_for_message_type,
-) -> list[dict[str, str]]:
+) -> list[ResourceRef]:
     file_key = str(content.get("file_key") or content.get("image_key") or "").strip()
     if not file_key:
         return []
+    resource_type = resource_type_for_message_type(message_type)
     return [
         {
-            "channel": "lark",
-            "message_id": message_id,
-            "file_key": file_key,
-            "resource_type": resource_type_for_message_type(message_type),
+            "kind": "image" if resource_type == "image" else "file",
+            "scope": "quote",
             "content_type": attachment_mime_for_message_type(message_type),
+            "locator": {
+                "kind": "channel_file",
+                "channel": "lark",
+                "message_id": message_id,
+                "file_key": file_key,
+                "resource_type": resource_type,
+            },
         }
     ]
 
