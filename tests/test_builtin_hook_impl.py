@@ -368,6 +368,29 @@ async def test_on_error_dispatches_outbound_message(tmp_path: Path) -> None:
 
 
 @pytest.mark.asyncio
+async def test_on_error_hides_low_level_responses_shape_error_from_chat_user(tmp_path: Path) -> None:
+    framework, impl, _ = _build_impl(tmp_path)
+    calls: list[tuple[str, dict[str, object]]] = []
+
+    async def call_many(name: str, **kwargs: object) -> list[object]:
+        calls.append((name, kwargs))
+        return []
+
+    framework._hook_runtime.call_many = call_many  # type: ignore[method-assign]
+
+    await impl.on_error(
+        stage="turn",
+        error=RuntimeError("openai:gpt-5.2: Responses API returned an unexpected type: <class 'str'>"),
+        message={"channel": "lark", "chat_id": "room", "content": "重试并截图给我"},
+    )
+
+    outbound = calls[0][1]["message"]
+    assert outbound.kind == "error"
+    assert "模型响应解析阶段出了内部错误" in outbound.content
+    assert "Responses API returned an unexpected type" not in outbound.content
+
+
+@pytest.mark.asyncio
 async def test_dispatch_outbound_uses_framework_router(tmp_path: Path) -> None:
     framework, impl, _ = _build_impl(tmp_path)
     dispatched: list[object] = []

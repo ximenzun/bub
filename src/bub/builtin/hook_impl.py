@@ -58,6 +58,8 @@ When responding to a channel message, you MUST:
 Excessively long context may cause model call failures. In this case, you MAY use tape.info to the token usage and you SHOULD use tape.handoff tool to shorten the length of the retrieved history.
 </context_contract>
 """
+RESPONSES_SHAPE_ERROR_RE = re.compile(r"responses api returned an unexpected type", re.IGNORECASE)
+_CJK_RE = re.compile(r"[\u3400-\u9fff]")
 
 
 class BuiltinImpl:
@@ -210,7 +212,7 @@ class BuiltinImpl:
             outbound = self._build_outbound_message(
                 message=message,
                 session_id=field_of(message, "session_id", "unknown"),
-                model_output=f"An error occurred at stage '{stage}': {error}",
+                model_output=_user_facing_error_message(stage=stage, error=error, message=message),
                 kind="error",
             )
             await self.framework._hook_runtime.call_many("dispatch_outbound", message=outbound)
@@ -847,3 +849,25 @@ def _resolved_content_type(content_type: str, detected_type: str | None) -> str:
     if isinstance(detected_type, str) and detected_type:
         return detected_type
     return "image/png"
+
+
+def _user_facing_error_message(*, stage: str, error: Exception, message: Envelope) -> str:
+    if _is_responses_shape_error(error):
+        if _prefers_chinese(message):
+            return (
+                "这次处理在模型响应解析阶段出了内部错误，任务没有正常完成。\n\n"
+                "请直接回复“重试”再试一次；如果还失败，我会改用更保守的处理方式继续。"
+            )
+        return (
+            "This run hit an internal model response parsing error and did not finish cleanly.\n\n"
+            "Reply with `retry` to try again. If it still fails, I will switch to a more conservative fallback path."
+        )
+    return f"An error occurred at stage '{stage}': {error}"
+
+
+def _is_responses_shape_error(error: Exception) -> bool:
+    return bool(RESPONSES_SHAPE_ERROR_RE.search(str(error)))
+
+
+def _prefers_chinese(message: Envelope) -> bool:
+    return bool(_CJK_RE.search(content_of(message)))
