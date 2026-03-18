@@ -10,6 +10,16 @@ from typing import Any, Literal, cast
 from republic import TapeContext, TapeEntry
 from republic.tape.context import LAST_ANCHOR, AnchorSelector
 
+from bub.builtin.resource_refs import (
+    LEGACY_MEDIA_REFS_KEY,
+    RESOURCE_REFS_KEY,
+    ResourceRef,
+    coerce_resource_refs,
+    resource_ref_signature,
+    resource_refs_from_artifacts,
+    summarize_resource_ref,
+)
+
 type TapeView = Literal["active", "messages", "timeline"]
 
 DEFAULT_TAPE_VIEW: TapeView = "active"
@@ -66,12 +76,21 @@ def restore_tape_state(
 
 
 def _select_messages(entries: Iterable[TapeEntry], context: TapeContext) -> list[dict[str, Any]]:
+    messages, _resources = select_messages_and_resources(entries, context)
+    return messages
+
+
+def select_messages_and_resources(
+    entries: Iterable[TapeEntry],
+    context: TapeContext,
+) -> tuple[list[dict[str, Any]], list[dict[str, object]]]:
     entry_list = list(entries)
     view = normalize_tape_view(context.state.get(TAPE_VIEW_KEY))
     if view == "timeline":
-        return _select_timeline_entries(entry_list)
+        return _select_timeline_entries_and_resources(entry_list)
 
     messages: list[dict[str, Any]] = []
+    resources: list[ResourceRef] = []
     pending_calls: list[dict[str, Any]] = []
     if view == "active":
         _prepend_anchor_state(messages, context)
@@ -79,6 +98,7 @@ def _select_messages(entries: Iterable[TapeEntry], context: TapeContext) -> list
     for entry in entry_list:
         if entry.kind == "message":
             _append_message_entry(messages, entry)
+            resources.extend(_resource_refs_from_message_entry(entry))
             continue
 
         if entry.kind == "tool_call":
@@ -87,9 +107,10 @@ def _select_messages(entries: Iterable[TapeEntry], context: TapeContext) -> list
 
         if entry.kind == "tool_result":
             _append_tool_result_entry(messages, pending_calls, entry)
+            resources.extend(_resource_refs_from_tool_result_entry(entry, pending_calls))
             pending_calls = []
 
-    return messages
+    return messages, _dedupe_resource_refs(resources)
 
 
 def _append_message_entry(messages: list[dict[str, Any]], entry: TapeEntry) -> None:
@@ -160,6 +181,8 @@ def _render_tool_result(result: object) -> str:
 
 def _sanitize_message_payload(payload: Mapping[str, Any]) -> dict[str, Any]:
     message = dict(payload)
+    message.pop(RESOURCE_REFS_KEY, None)
+    message.pop(LEGACY_MEDIA_REFS_KEY, None)
     message.pop("_bub_media_refs", None)
     message.pop("_bub_inbound_message_id", None)
     message["content"] = _sanitize_message_content(message.get("content"))
@@ -199,7 +222,7 @@ def _sanitize_message_content(content: object) -> object:
 
 
 def _sanitize_tool_result_string(result: str) -> str:
-    if ("base64" in result or "data:" in result) and result[:1] in "{[":
+    if result[:1] in "{[":
         try:
             parsed = json.loads(result)
         except json.JSONDecodeError:
@@ -212,6 +235,12 @@ def _sanitize_for_context(value: object) -> object:
     if isinstance(value, Mapping):
         sanitized: dict[str, Any] = {}
         for key, item in value.items():
+            if str(key) in {RESOURCE_REFS_KEY, LEGACY_MEDIA_REFS_KEY}:
+                sanitized[str(key)] = _resource_ref_summaries(coerce_resource_refs(item))
+                continue
+            if str(key) == "artifacts":
+                sanitized[str(key)] = _resource_ref_summaries(resource_refs_from_artifacts(item))
+                continue
             if str(key).casefold() == "base64" and isinstance(item, str):
                 sanitized[str(key)] = f"[base64 omitted: {len(item)} chars]"
                 continue
@@ -256,13 +285,17 @@ def _prepend_anchor_state(messages: list[dict[str, Any]], context: TapeContext) 
         messages.append({"role": "system", "content": "\n".join(lines)})
 
 
-def _select_timeline_entries(entries: list[TapeEntry]) -> list[dict[str, Any]]:
+def _select_timeline_entries_and_resources(
+    entries: list[TapeEntry],
+) -> tuple[list[dict[str, Any]], list[dict[str, object]]]:
     messages: list[dict[str, Any]] = []
+    resources: list[ResourceRef] = []
     pending_calls: list[dict[str, Any]] = []
 
     for entry in entries:
         if entry.kind == "message":
             _append_message_entry(messages, entry)
+            resources.extend(_resource_refs_from_message_entry(entry))
             continue
         if entry.kind == "system":
             messages.append({"role": "system", "content": _entry_text(entry.payload.get("content"))})
@@ -281,9 +314,10 @@ def _select_timeline_entries(entries: list[TapeEntry]) -> list[dict[str, Any]]:
             continue
         if entry.kind == "tool_result":
             _append_tool_result_entry(messages, pending_calls, entry)
+            resources.extend(_resource_refs_from_tool_result_entry(entry, pending_calls))
             pending_calls = []
 
-    return messages
+    return messages, _dedupe_resource_refs(resources)
 
 
 def _render_anchor_entry(entry: TapeEntry) -> str:
@@ -312,3 +346,81 @@ def _entry_text(value: object) -> str:
         return json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
     except TypeError:
         return str(value)
+
+
+def _resource_refs_from_message_entry(entry: TapeEntry) -> list[ResourceRef]:
+    payload = entry.payload
+    if not isinstance(payload, Mapping):
+        return []
+    return coerce_resource_refs(payload.get(RESOURCE_REFS_KEY, payload.get(LEGACY_MEDIA_REFS_KEY)))
+
+
+def _resource_refs_from_tool_result_entry(
+    entry: TapeEntry,
+    pending_calls: list[dict[str, Any]],
+) -> list[ResourceRef]:
+    results = entry.payload.get("results")
+    if not isinstance(results, list):
+        return []
+    refs: list[ResourceRef] = []
+    for index, result in enumerate(results):
+        origin_name = None
+        if index < len(pending_calls):
+            function = pending_calls[index].get("function")
+            if isinstance(function, Mapping):
+                name = function.get("name")
+                if isinstance(name, str) and name:
+                    origin_name = name
+        refs.extend(_resource_refs_from_tool_result(result, origin_name=origin_name))
+    return refs
+
+
+def _resource_refs_from_tool_result(result: object, *, origin_name: str | None) -> list[ResourceRef]:
+    if isinstance(result, str):
+        try:
+            parsed = json.loads(result)
+        except json.JSONDecodeError:
+            return []
+        return _resource_refs_from_tool_result(parsed, origin_name=origin_name)
+    if isinstance(result, Mapping):
+        refs = coerce_resource_refs(result.get(RESOURCE_REFS_KEY, result.get(LEGACY_MEDIA_REFS_KEY)))
+        if refs:
+            return _with_tool_origin(refs, origin_name=origin_name)
+        artifacts = resource_refs_from_artifacts(result.get("artifacts"), origin_name=origin_name)
+        if artifacts:
+            return artifacts
+        return []
+    if isinstance(result, list):
+        refs: list[ResourceRef] = []
+        for item in result:
+            refs.extend(_resource_refs_from_tool_result(item, origin_name=origin_name))
+        return refs
+    return []
+
+
+def _with_tool_origin(refs: list[ResourceRef], *, origin_name: str | None) -> list[ResourceRef]:
+    normalized: list[ResourceRef] = []
+    for ref in refs:
+        current = dict(ref)
+        current.setdefault("scope", "tool")
+        current.setdefault("origin_role", "tool")
+        if origin_name is not None:
+            current.setdefault("origin_name", origin_name)
+        normalized.append(cast(ResourceRef, current))
+    return normalized
+
+
+def _dedupe_resource_refs(refs: list[ResourceRef]) -> list[dict[str, object]]:
+    seen: set[str] = set()
+    deduped: list[dict[str, object]] = []
+    for ref in refs:
+        signature = resource_ref_signature(ref)
+        if signature in seen:
+            continue
+        seen.add(signature)
+        deduped.append(dict(ref))
+    return deduped
+
+
+def _resource_ref_summaries(refs: list[ResourceRef]) -> list[dict[str, object]]:
+    return [summarize_resource_ref(ref) for ref in cast(list[ResourceRef], _dedupe_resource_refs(refs))]

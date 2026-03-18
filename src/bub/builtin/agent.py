@@ -19,6 +19,7 @@ from republic import LLM, AsyncTapeStore, ToolAutoResult, ToolContext
 from republic.tape import InMemoryTapeStore, Tape
 
 from bub.builtin.context import default_tape_context
+from bub.builtin.resource_refs import RESOURCE_REFS_KEY, coerce_resource_refs
 from bub.builtin.settings import AgentSettings
 from bub.builtin.store import ForkTapeStore
 from bub.builtin.tape import TapeService
@@ -31,7 +32,6 @@ from bub.utils import workspace_from_state
 CONTINUE_PROMPT = "Continue the task or respond to the channel."
 DEFAULT_BUB_HEADERS = {"HTTP-Referer": "https://bub.build/", "X-Title": "Bub"}
 HINT_RE = re.compile(r"\$([A-Za-z0-9_.-]+)")
-MEDIA_REFS_KEY = "_bub_media_refs"
 INBOUND_MESSAGE_ID_KEY = "_bub_inbound_message_id"
 
 
@@ -569,9 +569,9 @@ def _messages_with_system_prompt(
 
 def _persisted_user_message(persisted_prompt: str, state: State) -> dict[str, object]:
     message: dict[str, object] = {"role": "user", "content": persisted_prompt}
-    media_refs = _coerce_media_refs(state.get("_inbound_media_refs"))
-    if media_refs:
-        message[MEDIA_REFS_KEY] = media_refs
+    resource_refs = coerce_resource_refs(state.get("_inbound_resource_refs", state.get("_inbound_media_refs")))
+    if resource_refs:
+        message[RESOURCE_REFS_KEY] = resource_refs
     inbound_message_id = state.get("_inbound_message_id")
     if isinstance(inbound_message_id, str) and inbound_message_id:
         message[INBOUND_MESSAGE_ID_KEY] = inbound_message_id
@@ -579,20 +579,28 @@ def _persisted_user_message(persisted_prompt: str, state: State) -> dict[str, ob
 
 
 def _coerce_media_refs(raw: object) -> list[dict[str, str]]:
-    if not isinstance(raw, list):
-        return []
-    refs: list[dict[str, str]] = []
-    for item in raw:
-        if not isinstance(item, dict):
+    refs = coerce_resource_refs(raw)
+    normalized: list[dict[str, str]] = []
+    for ref in refs:
+        locator = ref.get("locator")
+        if not isinstance(locator, dict):
             continue
-        channel = item.get("channel")
-        if not isinstance(channel, str) or not channel:
+        current: dict[str, str] = {}
+        channel = locator.get("channel")
+        if isinstance(channel, str) and channel:
+            current["channel"] = channel
+        elif locator.get("kind") == "url":
+            current["channel"] = "unknown"
+        else:
             continue
-        ref: dict[str, str] = {"channel": channel}
-        for key in ("message_id", "file_key", "resource_type", "content_type", "url", "name"):
-            value = item.get(key)
+        for key in ("message_id", "file_key", "resource_type", "url"):
+            value = locator.get(key)
             if isinstance(value, str) and value:
-                ref[key] = value
-        if "url" in ref or {"message_id", "file_key", "resource_type"} <= set(ref):
-            refs.append(ref)
-    return refs
+                current[key] = value
+        for key in ("content_type", "name"):
+            value = ref.get(key)
+            if isinstance(value, str) and value:
+                current[key] = value
+        if "url" in current or {"message_id", "file_key", "resource_type"} <= set(current):
+            normalized.append(current)
+    return normalized

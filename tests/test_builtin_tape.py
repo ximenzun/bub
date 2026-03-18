@@ -9,9 +9,10 @@ from republic import LLM, TapeEntry, ToolContext
 from republic.tape import InMemoryTapeStore
 
 from bub.builtin.context import default_tape_context
+from bub.builtin.resource_refs import RESOURCE_REFS_KEY
 from bub.builtin.store import ForkTapeStore
 from bub.builtin.tape import TapeService
-from bub.builtin.tools import tape_anchors, tape_context, tape_handoff, tape_search, tape_view
+from bub.builtin.tools import tape_anchors, tape_context, tape_handoff, tape_resources, tape_search, tape_view
 
 
 def _make_tape_service(tmp_path: Path) -> tuple[TapeService, InMemoryTapeStore]:
@@ -110,6 +111,72 @@ async def test_context_snapshot_sanitizes_multimodal_messages_and_tool_results(t
 
 
 @pytest.mark.asyncio
+async def test_context_snapshot_collects_structured_resources_without_dumping_locators(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape = service.session_tape("user/session", tmp_path)
+    await service.ensure_bootstrap_anchor(tape.name)
+    image_path = tmp_path / "screen.png"
+    image_path.write_bytes(b"png")
+    await tape.append_async(
+        TapeEntry.message(
+            {
+                "role": "user",
+                "content": "[Lark image]",
+                RESOURCE_REFS_KEY: [
+                    {
+                        "kind": "image",
+                        "scope": "message",
+                        "content_type": "image/*",
+                        "locator": {
+                            "kind": "channel_file",
+                            "channel": "lark",
+                            "message_id": "om_1",
+                            "file_key": "img_1",
+                            "resource_type": "image",
+                        },
+                    }
+                ],
+            }
+        )
+    )
+    await tape.append_async(
+        TapeEntry.tool_call(
+            [{"id": "call-1", "type": "function", "function": {"name": "browser_snapshot", "arguments": "{}"}}]
+        )
+    )
+    await tape.append_async(
+        TapeEntry.tool_result(
+            [
+                json.dumps(
+                    {
+                        "ok": True,
+                        "artifacts": [
+                            {
+                                "kind": "image",
+                                "name": "screen.png",
+                                "path": str(image_path),
+                                "content_type": "image/png",
+                                "transport": "local_path",
+                            }
+                        ],
+                    },
+                    ensure_ascii=False,
+                )
+            ]
+        )
+    )
+
+    snapshot = await service.context_snapshot(tape.name, runtime_state={"session_id": "user/session"})
+
+    assert len(snapshot.resources) == 2
+    assert snapshot.resources[0]["locator"]["kind"] == "channel_file"
+    assert snapshot.resources[1]["origin_name"] == "browser_snapshot"
+    assert snapshot.resources[1]["locator"]["path"] == str(image_path)
+    assert str(image_path) not in snapshot.messages[-1]["content"]
+    assert '"locator_kind": "path"' in snapshot.messages[-1]["content"]
+
+
+@pytest.mark.asyncio
 async def test_tape_search_defaults_cover_anchor_and_event_entries(tmp_path: Path) -> None:
     service, _ = _make_tape_service(tmp_path)
     tape_name = await _seed_tape(service, tmp_path)
@@ -142,12 +209,16 @@ async def test_tape_view_and_context_tools_show_active_state(tmp_path: Path) -> 
 
     rendered_view = await tape_view.run(view="active", limit=10, context=context)
     rendered_context = await tape_context.run(view="active", limit=10, context=context)
+    rendered_resources = await tape_resources.run(view="active", limit=10, context=context)
 
     assert "view: active" in rendered_view
     assert '"role": "system"' in rendered_view
     assert "carry this forward" in rendered_view
+    assert "resources:" in rendered_view
     assert "anchor_state:" in rendered_context
+    assert "resources:" in rendered_context
     assert '"owner": "agent"' in rendered_context
+    assert "resources: 0" in rendered_resources
 
 
 @pytest.mark.asyncio
