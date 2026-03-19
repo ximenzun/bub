@@ -140,6 +140,19 @@ class BubFramework:
 
         return self._hook_runtime.hook_report()
 
+    def cleanup_runtime(self, *, force: bool = False) -> list[str]:
+        """Run plugin cleanup hooks and collect user-facing result lines."""
+
+        lines: list[str] = []
+        for result in self._hook_runtime.call_many_sync(
+            "cleanup_runtime",
+            workspace=self.workspace,
+            force=force,
+        ):
+            if isinstance(result, list):
+                lines.extend(str(item) for item in result if item is not None)
+        return lines
+
     def bind_outbound_router(self, router: OutboundChannelRouter | None) -> None:
         self._outbound_router = router
 
