@@ -69,3 +69,17 @@ def test_login_rejects_unsupported_provider() -> None:
 
     assert result.exit_code == 1
     assert "Unsupported auth provider: anthropic" in result.stderr
+
+
+def test_cleanup_command_renders_framework_cleanup_lines(monkeypatch, tmp_path: Path) -> None:
+    def fake_cleanup_runtime(self, *, force: bool = False) -> list[str]:
+        assert force is True
+        return ["cleaned: browser runtime", "cleaned: test plugin"]
+
+    monkeypatch.setattr(BubFramework, "cleanup_runtime", fake_cleanup_runtime)
+
+    result = CliRunner().invoke(_create_app(), ["--workspace", str(tmp_path), "cleanup", "--force"])
+
+    assert result.exit_code == 0
+    assert "cleaned: browser runtime" in result.stdout
+    assert "cleaned: test plugin" in result.stdout

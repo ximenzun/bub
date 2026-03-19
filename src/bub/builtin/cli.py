@@ -10,6 +10,13 @@ from pathlib import Path
 import typer
 from republic.auth.openai_codex import CodexOAuthLoginError, OpenAICodexOAuthTokens, login_openai_codex_oauth
 
+from bub.builtin.gateway_registry import (
+    GatewayAlreadyRunningError,
+    ensure_gateway_slot,
+    kill_gateway_records,
+    list_gateway_records,
+    release_gateway_slot,
+)
 from bub.channels.message import ChannelMessage
 from bub.envelope import field_of
 from bub.framework import BubFramework
@@ -65,7 +72,72 @@ def gateway(
     framework = ctx.ensure_object(BubFramework)
 
     manager = ChannelManager(framework, enabled_channels=enable_channels or None)
-    asyncio.run(manager.listen_and_run())
+    try:
+        ensure_gateway_slot(framework.workspace)
+    except GatewayAlreadyRunningError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    try:
+        asyncio.run(manager.listen_and_run())
+    finally:
+        release_gateway_slot(framework.workspace)
+
+
+def gateway_status(
+    ctx: typer.Context,
+    all_workspaces: bool = typer.Option(False, "--all", help="Show registered gateway records for all workspaces."),
+) -> None:
+    """Show registered Bub gateway processes."""
+
+    framework = ctx.ensure_object(BubFramework)
+    records = list_gateway_records()
+    if not records:
+        typer.echo("(no registered gateways)")
+        return
+    current_workspace = framework.workspace.resolve()
+    for record in records:
+        if not all_workspaces and record.workspace != current_workspace:
+            continue
+        typer.echo(
+            f"pid: {record.pid}\n"
+            f"alive: {record.alive}\n"
+            f"workspace: {record.workspace}\n"
+            f"started_at: {record.started_at}\n"
+            f"record: {record.path}\n"
+        )
+
+
+def gateway_kill(
+    ctx: typer.Context,
+    all_workspaces: bool = typer.Option(False, "--all", help="Kill registered gateways for all workspaces."),
+    force: bool = typer.Option(False, "--force", help="Use SIGKILL instead of SIGTERM."),
+) -> None:
+    """Stop registered Bub gateway processes."""
+
+    framework = ctx.ensure_object(BubFramework)
+    lines = kill_gateway_records(
+        workspace=None if all_workspaces else framework.workspace,
+        kill_all=all_workspaces,
+        force=force,
+    )
+    if not lines:
+        typer.echo("(no matching gateways)")
+        return
+    typer.echo("\n".join(lines))
+
+
+def cleanup(
+    ctx: typer.Context,
+    force: bool = typer.Option(False, "--force", help="Ask plugins to use stronger cleanup behavior when supported."),
+) -> None:
+    """Run plugin-owned runtime cleanup hooks."""
+
+    framework = ctx.ensure_object(BubFramework)
+    lines = framework.cleanup_runtime(force=force)
+    if not lines:
+        typer.echo("(no plugin cleanup actions reported)")
+        return
+    typer.echo("\n".join(lines))
 
 
 def chat(

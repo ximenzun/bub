@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import pluggy
@@ -75,6 +76,10 @@ class BubHookSpecs:
     @hookspec
     def register_cli_commands(self, app: Any) -> None:
         """Register CLI commands onto the root Typer application."""
+
+    @hookspec
+    def cleanup_runtime(self, workspace: Path, force: bool) -> list[str]:
+        """Clean plugin-owned runtime state for one workspace or shared plugin runtime."""
 
     @hookspec
     def on_error(self, stage: str, error: Exception, message: Envelope | None) -> None:
