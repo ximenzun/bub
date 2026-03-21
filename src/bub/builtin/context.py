@@ -383,9 +383,9 @@ def _resource_refs_from_tool_result(result: object, *, origin_name: str | None) 
             return []
         return _resource_refs_from_tool_result(parsed, origin_name=origin_name)
     if isinstance(result, Mapping):
-        refs = coerce_resource_refs(result.get(RESOURCE_REFS_KEY, result.get(LEGACY_MEDIA_REFS_KEY)))
-        if refs:
-            return _with_tool_origin(refs, origin_name=origin_name)
+        resource_refs = coerce_resource_refs(result.get(RESOURCE_REFS_KEY, result.get(LEGACY_MEDIA_REFS_KEY)))
+        if resource_refs:
+            return _with_tool_origin(resource_refs, origin_name=origin_name)
         artifacts = resource_refs_from_artifacts(result.get("artifacts"), origin_name=origin_name)
         if artifacts:
             return artifacts

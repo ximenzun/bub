@@ -88,7 +88,9 @@ def outbound_actions_of(message: Envelope, *, default_platform: str | None = Non
     reply_to_message_id = _string_or_none(field_of(message, "reply_to_message_id"))
     if not text.strip() and not attachments:
         return []
-    kind = "reply_message" if reply_to_message_id or (reply_grant and reply_grant.reply_to_message_id) else "send_message"
+    kind = (
+        "reply_message" if reply_to_message_id or (reply_grant and reply_grant.reply_to_message_id) else "send_message"
+    )
     return [
         OutboundAction(
             kind=kind,  # type: ignore[arg-type]

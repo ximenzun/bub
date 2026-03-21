@@ -47,7 +47,7 @@ class ForkTapeStore:
         entries = await self._combined_entries(query.tape)
         store = _ListTapeStore(entries)
         replay_query = replace(query, store=store)
-        return store.fetch_all(cast(TapeQuery, replay_query))
+        return cast(Iterable[TapeEntry], store.fetch_all(cast(TapeQuery, replay_query)))
 
     async def _combined_entries(self, tape: str) -> list[TapeEntry]:
         parent_query = TapeQuery[AsyncTapeStore](tape=tape, store=self._parent)

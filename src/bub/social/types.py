@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field, is_dataclass
 from datetime import datetime
-from typing import Any, Literal
+from typing import Any, Literal, cast
 
 type ConversationSurface = Literal["direct", "group", "channel", "thread", "business", "unknown"]
 type AdapterMode = Literal["native", "bridge", "webhook_sink", "session_bot", "tenant_app", "unknown"]
@@ -54,7 +54,7 @@ def _coerce_datetime(value: Any) -> datetime | None:
         return None
     if isinstance(value, datetime):
         return value
-    if isinstance(value, (int, float)):
+    if isinstance(value, int | float):
         return datetime.fromtimestamp(value)
     if isinstance(value, str):
         raw = value.strip()
@@ -96,7 +96,7 @@ def to_primitive(value: Any) -> Any:
         return value
     if isinstance(value, datetime):
         return value.isoformat()
-    if is_dataclass(value):
+    if not isinstance(value, type) and is_dataclass(value):
         return {key: to_primitive(item) for key, item in asdict(value).items()}
     if isinstance(value, Mapping):
         return {str(key): to_primitive(item) for key, item in value.items()}
@@ -144,7 +144,7 @@ class ConversationRef:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
     @property
     def channel_key(self) -> str:
@@ -178,7 +178,7 @@ class ParticipantRef:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -199,7 +199,7 @@ class MentionTarget:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -228,7 +228,7 @@ class CredentialSpec:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -260,7 +260,7 @@ class ProvisioningInfo:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -293,7 +293,7 @@ class ReplyGrant:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -323,7 +323,7 @@ class Attachment:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -348,7 +348,7 @@ class LiveSurfaceRef:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -379,7 +379,9 @@ class InboundEvent:
                 default_platform=str(data.get("platform") or "unknown"),
                 default_chat_id=str(data.get("chat_id") or "default"),
             ),
-            sender=sender if isinstance(sender, ParticipantRef) else ParticipantRef.from_mapping(_mapping_of(sender))
+            sender=sender
+            if isinstance(sender, ParticipantRef)
+            else ParticipantRef.from_mapping(_mapping_of(sender))
             if sender is not None
             else None,
             message_id=_as_str(data.get("message_id")),
@@ -387,7 +389,8 @@ class InboundEvent:
             content_type=str(data.get("content_type") or "text"),  # type: ignore[arg-type]
             raw_content=_as_str(data.get("raw_content")),
             attachments=[
-                item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item)) for item in attachments
+                item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item))
+                for item in attachments
             ],
             reply_grant=reply_grant
             if isinstance(reply_grant, ReplyGrant)
@@ -398,7 +401,7 @@ class InboundEvent:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
 
 
 @dataclass(slots=True)
@@ -426,7 +429,8 @@ class OutboundAction:
         if isinstance(self.card, Mapping):
             self.card = dict(self.card)
         self.attachments = [
-            item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item)) for item in self.attachments
+            item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item))
+            for item in self.attachments
         ]
         self.mentions = [
             item if isinstance(item, MentionTarget) else MentionTarget.from_mapping(_mapping_of(item))
@@ -487,13 +491,16 @@ class OutboundAction:
             if reply_grant is not None
             else None,
             attachments=[
-                item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item)) for item in attachments
+                item if isinstance(item, Attachment) else Attachment.from_mapping(_mapping_of(item))
+                for item in attachments
             ],
             mentions=[
                 item if isinstance(item, MentionTarget) else MentionTarget.from_mapping(_mapping_of(item))
                 for item in mentions
             ],
-            target_ids=[str(item) for item in target_ids] if isinstance(target_ids, list | tuple | set | frozenset) else [],
+            target_ids=[str(item) for item in target_ids]
+            if isinstance(target_ids, list | tuple | set | frozenset)
+            else [],
             live_surface=live_surface
             if isinstance(live_surface, LiveSurfaceRef)
             else LiveSurfaceRef.from_mapping(_mapping_of(live_surface))
@@ -504,4 +511,8 @@ class OutboundAction:
         )
 
     def as_dict(self) -> dict[str, Any]:
-        return to_primitive(self)
+        return _as_primitive_dict(self)
+
+
+def _as_primitive_dict(value: Any) -> dict[str, Any]:
+    return cast(dict[str, Any], to_primitive(value))

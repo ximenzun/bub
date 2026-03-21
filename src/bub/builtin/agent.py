@@ -7,7 +7,7 @@ import inspect
 import re
 import shlex
 import time
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from dataclasses import dataclass, replace
 from datetime import UTC, datetime
 from functools import cached_property, partial
@@ -136,7 +136,9 @@ class Agent:
         for step in range(1, self.settings.max_steps + 1):
             start = time.monotonic()
             logger.info("loop.step step={} tape={} model={}", step, tape.name, display_model)
-            await self.tapes.append_event(tape.name, "loop.step.start", {"step": step, "prompt": _event_prompt(next_prompt)})
+            await self.tapes.append_event(
+                tape.name, "loop.step.start", {"step": step, "prompt": _event_prompt(next_prompt)}
+            )
             try:
                 output = await self._run_tools_once(
                     tape=tape,
@@ -220,7 +222,9 @@ class Agent:
         allowed_tools: Collection[str] | None = None,
         allowed_skills: Collection[str] | None = None,
     ) -> ToolAutoResult:
-        extra_options = {"extra_headers": DEFAULT_BUB_HEADERS} if self.settings.model.startswith("openrouter:") else {}
+        extra_options: dict[str, object] = (
+            {"extra_headers": DEFAULT_BUB_HEADERS} if self.settings.model.startswith("openrouter:") else {}
+        )
         prompt_text = prompt if isinstance(prompt, str) else _extract_text_from_parts(prompt)
         if allowed_tools is not None:
             allowed_tools = {name.casefold() for name in allowed_tools}
@@ -557,13 +561,13 @@ async def _run_tools_with_transient_prompt(
 def _messages_with_system_prompt(
     history: list[dict[str, Any]],
     system_prompt: str,
-    transient_user_message: dict[str, object],
+    transient_user_message: Mapping[str, object],
 ) -> list[dict[str, Any]]:
     messages: list[dict[str, Any]] = []
     if system_prompt:
         messages.append({"role": "system", "content": system_prompt})
     messages.extend(history)
-    messages.append(transient_user_message)
+    messages.append(dict(transient_user_message))
     return messages
 
 

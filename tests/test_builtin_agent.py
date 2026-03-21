@@ -34,23 +34,23 @@ class _FakeTapeService:
 
 @pytest.mark.asyncio
 async def test_agent_run_command_syncs_tape_state_back_to_framework_state() -> None:
-    command_name = 'test.state.sync'
+    command_name = "test.state.sync"
 
     @tool(name=command_name, context=True)
     def _state_sync_tool(*, context) -> str:
-        context.state['_suppress_default_outbound'] = True
-        return ''
+        context.state["_suppress_default_outbound"] = True
+        return ""
 
     framework = BubFramework()
     agent = Agent(framework)
-    tape = SimpleNamespace(name='test-tape', context=SimpleNamespace(state={}))
-    agent.__dict__['tapes'] = _FakeTapeService(tape)
-    state: dict[str, object] = {'_runtime_workspace': str(Path.cwd())}
+    tape = SimpleNamespace(name="test-tape", context=SimpleNamespace(state={}))
+    agent.__dict__["tapes"] = _FakeTapeService(tape)
+    state: dict[str, object] = {"_runtime_workspace": str(Path.cwd())}
 
     try:
-        result = await agent.run(session_id='cli:room', prompt=f',{command_name}', state=state)
+        result = await agent.run(session_id="cli:room", prompt=f",{command_name}", state=state)
     finally:
         REGISTRY.pop(command_name, None)
 
-    assert result == ''
-    assert state['_suppress_default_outbound'] is True
+    assert result == ""
+    assert state["_suppress_default_outbound"] is True

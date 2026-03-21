@@ -29,9 +29,7 @@ async def _seed_tape(service: TapeService, tmp_path: Path) -> str:
     await tape.append_async(TapeEntry.system("system note"))
     await tape.append_async(TapeEntry.message({"role": "user", "content": "next question"}))
     await tape.append_async(
-        TapeEntry.tool_call(
-            [{"id": "call-1", "type": "function", "function": {"name": "echo", "arguments": "{}"}}]
-        )
+        TapeEntry.tool_call([{"id": "call-1", "type": "function", "function": {"name": "echo", "arguments": "{}"}}])
     )
     await tape.append_async(TapeEntry.tool_result([{"status": "ok"}]))
     return tape.name
@@ -75,29 +73,25 @@ async def test_context_snapshot_sanitizes_multimodal_messages_and_tool_results(t
     tape = service.session_tape("user/session", tmp_path)
     await service.ensure_bootstrap_anchor(tape.name)
     await tape.append_async(
-        TapeEntry.message(
-            {
-                "role": "user",
-                "content": [
-                    {"type": "text", "text": "describe this"},
-                    {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}},
-                ],
-            }
-        )
+        TapeEntry.message({
+            "role": "user",
+            "content": [
+                {"type": "text", "text": "describe this"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}},
+            ],
+        })
     )
     await tape.append_async(
-        TapeEntry.tool_result(
-            [
-                json.dumps(
-                    {
-                        "ok": True,
-                        "base64": "cG5n",
-                        "preview": "data:image/png;base64,cG5n",
-                    },
-                    ensure_ascii=False,
-                )
-            ]
-        )
+        TapeEntry.tool_result([
+            json.dumps(
+                {
+                    "ok": True,
+                    "base64": "cG5n",
+                    "preview": "data:image/png;base64,cG5n",
+                },
+                ensure_ascii=False,
+            )
+        ])
     )
 
     snapshot = await service.context_snapshot(tape.name, runtime_state={"session_id": "user/session"})
@@ -118,52 +112,48 @@ async def test_context_snapshot_collects_structured_resources_without_dumping_lo
     image_path = tmp_path / "screen.png"
     image_path.write_bytes(b"png")
     await tape.append_async(
-        TapeEntry.message(
-            {
-                "role": "user",
-                "content": "[Lark image]",
-                RESOURCE_REFS_KEY: [
-                    {
-                        "kind": "image",
-                        "scope": "message",
-                        "content_type": "image/*",
-                        "locator": {
-                            "kind": "channel_file",
-                            "channel": "lark",
-                            "message_id": "om_1",
-                            "file_key": "img_1",
-                            "resource_type": "image",
-                        },
-                    }
-                ],
-            }
-        )
-    )
-    await tape.append_async(
-        TapeEntry.tool_call(
-            [{"id": "call-1", "type": "function", "function": {"name": "browser_snapshot", "arguments": "{}"}}]
-        )
-    )
-    await tape.append_async(
-        TapeEntry.tool_result(
-            [
-                json.dumps(
-                    {
-                        "ok": True,
-                        "artifacts": [
-                            {
-                                "kind": "image",
-                                "name": "screen.png",
-                                "path": str(image_path),
-                                "content_type": "image/png",
-                                "transport": "local_path",
-                            }
-                        ],
+        TapeEntry.message({
+            "role": "user",
+            "content": "[Lark image]",
+            RESOURCE_REFS_KEY: [
+                {
+                    "kind": "image",
+                    "scope": "message",
+                    "content_type": "image/*",
+                    "locator": {
+                        "kind": "channel_file",
+                        "channel": "lark",
+                        "message_id": "om_1",
+                        "file_key": "img_1",
+                        "resource_type": "image",
                     },
-                    ensure_ascii=False,
-                )
-            ]
-        )
+                }
+            ],
+        })
+    )
+    await tape.append_async(
+        TapeEntry.tool_call([
+            {"id": "call-1", "type": "function", "function": {"name": "browser_snapshot", "arguments": "{}"}}
+        ])
+    )
+    await tape.append_async(
+        TapeEntry.tool_result([
+            json.dumps(
+                {
+                    "ok": True,
+                    "artifacts": [
+                        {
+                            "kind": "image",
+                            "name": "screen.png",
+                            "path": str(image_path),
+                            "content_type": "image/png",
+                            "transport": "local_path",
+                        }
+                    ],
+                },
+                ensure_ascii=False,
+            )
+        ])
     )
 
     snapshot = await service.context_snapshot(tape.name, runtime_state={"session_id": "user/session"})
