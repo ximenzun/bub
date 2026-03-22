@@ -7,8 +7,9 @@ import asyncio
 import contextlib
 import os
 import signal
+from collections.abc import Callable
 from pathlib import Path
-from typing import Annotated, Callable, Protocol
+from typing import Annotated, Protocol
 
 import typer
 from republic.auth.openai_codex import CodexOAuthLoginError, OpenAICodexOAuthTokens, login_openai_codex_oauth
