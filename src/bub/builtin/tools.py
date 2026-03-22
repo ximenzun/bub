@@ -195,8 +195,10 @@ async def tape_info(context: ToolContext) -> str:
 async def tape_search(param: SearchInput, *, context: ToolContext) -> str:
     """Search for entries in the current tape that match the query. Returns a list of matching entries."""
     agent = _get_agent(context)
-    query = TapeQuery[AsyncTapeStore](tape=context.tape or "", store=agent.tapes._store).query(param.query).limit(
-        param.limit
+    query = (
+        TapeQuery[AsyncTapeStore](tape=context.tape or "", store=agent.tapes._store)
+        .query(param.query)
+        .limit(param.limit)
     )
     if param.kinds:
         query = query.kinds(*param.kinds)
@@ -309,7 +311,9 @@ async def tape_resources(param: TapeViewInput, *, context: ToolContext) -> str:
         f"resources: {len(snapshot.resources)}",
         "---",
     ]
-    lines.extend(json.dumps(summarize_resource_ref(resource), ensure_ascii=False, default=str) for resource in resources)
+    lines.extend(
+        json.dumps(summarize_resource_ref(resource), ensure_ascii=False, default=str) for resource in resources
+    )
     return "\n".join(lines)
 
 

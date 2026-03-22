@@ -121,25 +121,23 @@ async def test_channel_manager_dispatch_preserves_structured_fields_from_mapping
     manager = ChannelManager(FakeFramework({"lark": lark}), enabled_channels=["lark"])
     attachment_path = "/var/bub/demo.png"
 
-    result = await manager.dispatch(
-        {
-            "session_id": "session",
-            "channel": "cli",
-            "output_channel": "lark",
-            "chat_id": "oc_123",
-            "content": "see attachment",
-            "message_id": "om_456",
-            "attachments": [
-                {
-                    "content_type": "image/png",
-                    "metadata": {"path": attachment_path},
-                }
-            ],
-            "reply_grant": {"mode": "message_id", "reply_to_message_id": "om_parent"},
-            "conversation": {"platform": "lark", "chat_id": "oc_123", "thread_id": "omt_789"},
-            "metadata": {"source": "test"},
-        }
-    )
+    result = await manager.dispatch({
+        "session_id": "session",
+        "channel": "cli",
+        "output_channel": "lark",
+        "chat_id": "oc_123",
+        "content": "see attachment",
+        "message_id": "om_456",
+        "attachments": [
+            {
+                "content_type": "image/png",
+                "metadata": {"path": attachment_path},
+            }
+        ],
+        "reply_grant": {"mode": "message_id", "reply_to_message_id": "om_parent"},
+        "conversation": {"platform": "lark", "chat_id": "oc_123", "thread_id": "omt_789"},
+        "metadata": {"source": "test"},
+    })
 
     assert result is True
     assert len(lark.sent) == 1
@@ -159,23 +157,21 @@ async def test_channel_manager_dispatch_mapping_preserves_structured_attachments
     manager = ChannelManager(FakeFramework({"cli": cli_channel}), enabled_channels=["cli"])
     reply_token = "-".join(["req", "1"])
 
-    result = await manager.dispatch(
-        {
-            "session_id": "session",
-            "channel": "telegram",
-            "output_channel": "cli",
-            "chat_id": "room",
-            "content": "hello",
-            "attachments": [
-                {
-                    "content_type": "image/png",
-                    "url": "file:///tmp/example.png",
-                }
-            ],
-            "reply_grant": {"mode": "token", "token": reply_token},
-            "metadata": {"source": "test"},
-        }
-    )
+    result = await manager.dispatch({
+        "session_id": "session",
+        "channel": "telegram",
+        "output_channel": "cli",
+        "chat_id": "room",
+        "content": "hello",
+        "attachments": [
+            {
+                "content_type": "image/png",
+                "url": "file:///tmp/example.png",
+            }
+        ],
+        "reply_grant": {"mode": "token", "token": reply_token},
+        "metadata": {"source": "test"},
+    })
 
     assert result is True
     outbound = cli_channel.sent[0]

@@ -16,6 +16,7 @@ from bub.builtin.agent import Agent
 from bub.builtin.resource_refs import (
     LEGACY_MEDIA_REFS_KEY,
     RESOURCE_REFS_KEY,
+    ResourceLocator,
     ResourceRef,
     clone_resource_refs,
     coerce_resource_refs,
@@ -147,7 +148,9 @@ class BuiltinImpl:
 
         media_parts = await _image_parts_from_media(cast("list[MediaItem]", media))
         if not media_parts:
-            media_parts = await _image_parts_from_attachments(_non_quoted_attachments(cast("list[Attachment]", attachments)))
+            media_parts = await _image_parts_from_attachments(
+                _non_quoted_attachments(cast("list[Attachment]", attachments))
+            )
         media_refs = _message_resource_refs(message)
         if media_parts:
             if media_refs:
@@ -236,7 +239,7 @@ class BuiltinImpl:
         state: State,
         model_output: str,
     ) -> list[ChannelMessage]:
-        if state.get('_suppress_default_outbound'):
+        if state.get("_suppress_default_outbound"):
             return []
         return [
             self._build_outbound_message(
@@ -400,7 +403,10 @@ def _resource_ref_from_attachment(attachment: Attachment, *, channel: str) -> Re
     source = _attachment_source(attachment)
     if source is not None:
         locator_kind = "url" if "://" in source or source.startswith("data:") else "path"
-        ref["locator"] = {"kind": locator_kind, locator_kind: source}
+        if locator_kind == "url":
+            ref["locator"] = {"kind": "url", "url": source}
+        else:
+            ref["locator"] = {"kind": "path", "path": source}
         return ref
     if attachment.file_key:
         locator: dict[str, object] = {"kind": "channel_file", "channel": channel, "file_key": attachment.file_key}
@@ -412,7 +418,7 @@ def _resource_ref_from_attachment(attachment: Attachment, *, channel: str) -> Re
         if isinstance(value, str) and value:
             locator[key] = value
     if {"channel", "message_id", "file_key", "resource_type"} <= set(locator):
-        ref["locator"] = cast(dict[str, str], locator)
+        ref["locator"] = cast(ResourceLocator, locator)
         return ref
     return None
 
@@ -447,31 +453,45 @@ def _coerce_media_refs(raw: object) -> list[dict[str, str]]:
     resource_refs = coerce_resource_refs(raw)
     refs: list[dict[str, str]] = []
     for item in resource_refs:
-        locator = item.get("locator")
-        if not isinstance(locator, dict):
+        ref = _coerce_single_media_ref(item)
+        if ref is None:
             continue
-        channel = locator.get("channel")
-        if isinstance(channel, str) and channel:
-            ref: dict[str, str] = {"channel": channel}
-        elif locator.get("kind") in {"url", "path"}:
-            ref = {"channel": "unknown"}
-        else:
-            continue
-        for key in ("message_id", "file_key", "resource_type", "url"):
-            value = locator.get(key)
-            if isinstance(value, str) and value:
-                ref[key] = value
-        if "url" not in ref:
-            path_value = locator.get("path")
-            if isinstance(path_value, str) and path_value:
-                ref["url"] = path_value
-        for key in ("content_type", "name"):
-            value = item.get(key)
-            if isinstance(value, str) and value:
-                ref[key] = value
-        if "url" in ref or {"message_id", "file_key", "resource_type"} <= set(ref):
-            refs.append(ref)
+        refs.append(ref)
     return refs
+
+
+def _coerce_single_media_ref(item: ResourceRef) -> dict[str, str] | None:
+    locator = item.get("locator")
+    if not isinstance(locator, dict):
+        return None
+    ref = _base_media_ref(locator)
+    if ref is None:
+        return None
+    _copy_string_fields(ref, locator, ("message_id", "file_key", "resource_type", "url"))
+    if "url" not in ref:
+        path_value = locator.get("path")
+        if isinstance(path_value, str) and path_value:
+            ref["url"] = path_value
+    _copy_string_fields(ref, item, ("content_type", "name"))
+    if "url" in ref or {"message_id", "file_key", "resource_type"} <= set(ref):
+        return ref
+    return None
+
+
+def _base_media_ref(locator: Mapping[str, object]) -> dict[str, str] | None:
+    channel = locator.get("channel")
+    if isinstance(channel, str) and channel:
+        return {"channel": channel}
+    if locator.get("kind") in {"url", "path"}:
+        return {"channel": "unknown"}
+    return None
+
+
+def _copy_string_fields(target: dict[str, str], source: Mapping[str, object], keys: tuple[str, ...]) -> None:
+    for key in keys:
+        value = source.get(key)
+        if isinstance(value, str) and value:
+            target[key] = value
 
 
 async def _image_parts_from_refs(refs: list[ResourceRef]) -> list[dict[str, object]]:
@@ -512,13 +532,7 @@ def _fetch_lark_image_part_sync(ref: ResourceRef, message_id: str, file_key: str
         return None
 
     settings = get_lark_settings()
-    request = (
-        GetMessageResourceRequest.builder()
-        .message_id(message_id)
-        .file_key(file_key)
-        .type("image")
-        .build()
-    )
+    request = GetMessageResourceRequest.builder().message_id(message_id).file_key(file_key).type("image").build()
     response = get_lark_client().im.v1.message_resource.get(request)
     ensure_lark_success(response, "im.fetch_resource")
     payload = getattr(response, "file", None)
@@ -609,7 +623,9 @@ def _quoted_message_id_from_state(state: State) -> str | None:
     return None
 
 
-async def _quoted_from_tape(agent: Agent, *, session_id: str, state: State, message_id: str) -> dict[str, object] | None:
+async def _quoted_from_tape(
+    agent: Agent, *, session_id: str, state: State, message_id: str
+) -> dict[str, object] | None:
     tape = agent.tapes.session_tape(session_id, workspace_from_state(state))
     entries = list(await tape.query_async.all())
     for entry in reversed(entries):
@@ -745,20 +761,18 @@ def _parse_lark_post_quoted_content(
         file_key = str(resource_content.get("file_key") or resource_content.get("image_key") or "").strip()
         if not file_key:
             continue
-        refs.append(
-            {
-                "kind": "image" if resource_type == "image" else "file",
-                "scope": "quote",
-                "content_type": attachment_mime_for_message_type(resource_type),
-                "locator": {
-                    "kind": "channel_file",
-                    "channel": "lark",
-                    "message_id": message_id,
-                    "file_key": file_key,
-                    "resource_type": resource_type,
-                },
-            }
-        )
+        refs.append({
+            "kind": "image" if resource_type == "image" else "file",
+            "scope": "quote",
+            "content_type": attachment_mime_for_message_type(resource_type),
+            "locator": {
+                "kind": "channel_file",
+                "channel": "lark",
+                "message_id": message_id,
+                "file_key": file_key,
+                "resource_type": resource_type,
+            },
+        })
     return text, refs
 
 
@@ -858,8 +872,8 @@ def _user_facing_error_message(*, stage: str, error: Exception, message: Envelop
     if _is_responses_shape_error(error):
         if _prefers_chinese(message):
             return (
-                "这次处理在模型响应解析阶段出了内部错误，任务没有正常完成。\n\n"
-                "请直接回复“重试”再试一次；如果还失败，我会改用更保守的处理方式继续。"
+                "这次处理在模型响应解析阶段出了内部错误, 任务没有正常完成.\n\n"
+                '请直接回复"重试"再试一次; 如果还失败, 我会改用更保守的处理方式继续.'
             )
         return (
             "This run hit an internal model response parsing error and did not finish cleanly.\n\n"

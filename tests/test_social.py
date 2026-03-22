@@ -25,14 +25,12 @@ def test_channel_message_infers_conversation_from_channel_and_chat_id() -> None:
 
 
 def test_outbound_actions_of_defaults_to_reply_message_when_reply_grant_present() -> None:
-    actions = outbound_actions_of(
-        {
-            "channel": "telegram",
-            "chat_id": "42",
-            "content": "hello",
-            "reply_grant": {"mode": "message_id", "reply_to_message_id": "9"},
-        }
-    )
+    actions = outbound_actions_of({
+        "channel": "telegram",
+        "chat_id": "42",
+        "content": "hello",
+        "reply_grant": {"mode": "message_id", "reply_to_message_id": "9"},
+    })
 
     assert actions == [
         OutboundAction(
@@ -45,33 +43,29 @@ def test_outbound_actions_of_defaults_to_reply_message_when_reply_grant_present(
 
 
 def test_attachments_of_coerces_mapping_payloads() -> None:
-    attachments = attachments_of(
-        {
-            "attachments": [
-                {
-                    "content_type": "image/png",
-                    "url": "https://example.test/image.png",
-                    "file_key": "abc",
-                }
-            ]
-        }
-    )
+    attachments = attachments_of({
+        "attachments": [
+            {
+                "content_type": "image/png",
+                "url": "https://example.test/image.png",
+                "file_key": "abc",
+            }
+        ]
+    })
 
     assert attachments == [Attachment(content_type="image/png", url="https://example.test/image.png", file_key="abc")]
 
 
 def test_outbound_action_from_mapping_preserves_native_card_fields() -> None:
     request_id = "req-1"
-    action = OutboundAction.from_mapping(
-        {
-            "kind": "update_card",
-            "conversation": {"platform": "wecom", "chat_id": "chat-1"},
-            "content_type": "card",
-            "card": {"card_type": "text_notice", "main_title": {"title": "hello"}},
-            "target_ids": [FAKE_TARGET_USER_ID],
-            "reply_grant": {"mode": "token", "token": request_id},
-        }
-    )
+    action = OutboundAction.from_mapping({
+        "kind": "update_card",
+        "conversation": {"platform": "wecom", "chat_id": "chat-1"},
+        "content_type": "card",
+        "card": {"card_type": "text_notice", "main_title": {"title": "hello"}},
+        "target_ids": [FAKE_TARGET_USER_ID],
+        "reply_grant": {"mode": "token", "token": request_id},
+    })
 
     assert action.kind == "update_card"
     assert action.card == {"card_type": "text_notice", "main_title": {"title": "hello"}}

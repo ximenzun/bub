@@ -80,6 +80,7 @@ class BubHookSpecs:
     @hookspec
     def cleanup_runtime(self, workspace: Path, force: bool) -> list[str]:
         """Clean plugin-owned runtime state for one workspace or shared plugin runtime."""
+        raise NotImplementedError
 
     @hookspec
     def on_error(self, stage: str, error: Exception, message: Envelope | None) -> None:

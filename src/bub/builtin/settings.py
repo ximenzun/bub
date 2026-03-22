@@ -29,6 +29,7 @@ class AgentSettings(BaseSettings):
     max_steps: int = 50
     max_tokens: int = DEFAULT_MAX_TOKENS
     model_timeout_seconds: int | None = None
+
     @model_validator(mode="after")
     def _validate_api_shape(self) -> AgentSettings:
         if self.api_format != "responses" or not isinstance(self.api_base, str):

@@ -1,8 +1,8 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping
-from typing import Any, Literal, TypedDict, cast
+from collections.abc import Mapping, MutableMapping
+from typing import Literal, TypedDict, cast
 from urllib.parse import urlsplit, urlunsplit
 
 LEGACY_MEDIA_REFS_KEY = "_bub_media_refs"
@@ -98,7 +98,7 @@ def _normalize_resource_ref(raw: Mapping[str, object]) -> ResourceRef | None:
         locator = _normalize_locator(locator_value)
         if locator is None:
             return None
-        ref: ResourceRef = {
+        ref: dict[str, object] = {
             "kind": _normalize_kind(raw.get("kind"), content_type=raw.get("content_type")),
             "scope": _normalize_scope(raw.get("scope")),
             "locator": locator,
@@ -110,7 +110,7 @@ def _normalize_resource_ref(raw: Mapping[str, object]) -> ResourceRef | None:
         meta = raw.get("meta")
         if isinstance(meta, Mapping):
             ref["meta"] = {str(key): value for key, value in meta.items()}
-        return ref
+        return cast(ResourceRef, ref)
     return _resource_ref_from_legacy_media_ref(raw)
 
 
@@ -233,7 +233,7 @@ def _sanitize_url(value: str) -> str:
     return urlunsplit((parsed.scheme, parsed.netloc, parsed.path, "", ""))
 
 
-def _set_string(target: dict[str, object], key: str, value: object) -> None:
+def _set_string(target: MutableMapping[str, object], key: str, value: object) -> None:
     text = _string_or_none(value)
     if text is not None:
         target[key] = text

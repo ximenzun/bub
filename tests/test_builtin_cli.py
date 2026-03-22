@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
 
+import pytest
 from typer.testing import CliRunner
 
 import bub.builtin.cli as cli
@@ -83,3 +85,98 @@ def test_cleanup_command_renders_framework_cleanup_lines(monkeypatch, tmp_path: 
     assert result.exit_code == 0
     assert "cleaned: browser runtime" in result.stdout
     assert "cleaned: test plugin" in result.stdout
+
+
+def test_gateway_cleans_up_runtime_on_keyboard_interrupt(monkeypatch) -> None:
+    framework = BubFramework()
+    calls: list[tuple[str, object]] = []
+
+    class DummyCtx:
+        def ensure_object(self, cls):
+            assert cls is BubFramework
+            return framework
+
+    class DummyManager:
+        def __init__(self, framework_obj, enabled_channels=None) -> None:
+            assert framework_obj is framework
+            self.enabled_channels = enabled_channels
+
+        async def listen_and_run(self) -> None:
+            raise AssertionError("asyncio.run should be interrupted before awaiting manager coroutine")
+
+    def fake_cleanup_runtime(*, force: bool = False) -> list[str]:
+        calls.append(("cleanup", force))
+        return ["cleaned"]
+
+    def fake_ensure_gateway_slot(workspace: Path) -> None:
+        calls.append(("ensure", workspace))
+
+    def fake_release_gateway_slot(workspace: Path) -> None:
+        calls.append(("release", workspace))
+
+    def fake_asyncio_run(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(framework, "cleanup_runtime", fake_cleanup_runtime)
+    monkeypatch.setattr(cli, "ensure_gateway_slot", fake_ensure_gateway_slot)
+    monkeypatch.setattr(cli, "release_gateway_slot", fake_release_gateway_slot)
+    monkeypatch.setattr(asyncio, "run", fake_asyncio_run)
+
+    import bub.channels.manager as channel_manager_module
+
+    monkeypatch.setattr(channel_manager_module, "ChannelManager", DummyManager)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.gateway(DummyCtx(), enable_channels=[])
+
+    assert calls[0][0] == "ensure"
+    assert calls[1] == ("cleanup", False)
+    assert calls[2][0] == "release"
+
+
+def test_chat_cleans_up_runtime_on_keyboard_interrupt(monkeypatch) -> None:
+    framework = BubFramework()
+    calls: list[tuple[str, object]] = []
+
+    class DummyChannel:
+        def set_metadata(self, *, chat_id: str, session_id: str | None) -> None:
+            calls.append(("metadata", (chat_id, session_id)))
+
+    class DummyCtx:
+        def ensure_object(self, cls):
+            assert cls is BubFramework
+            return framework
+
+    class DummyManager:
+        def __init__(self, framework_obj, enabled_channels=None) -> None:
+            assert framework_obj is framework
+            self.channel = DummyChannel()
+
+        def get_channel(self, name: str):
+            assert name == "cli"
+            return self.channel
+
+        async def listen_and_run(self) -> None:
+            raise AssertionError("asyncio.run should be interrupted before awaiting manager coroutine")
+
+    def fake_cleanup_runtime(*, force: bool = False) -> list[str]:
+        calls.append(("cleanup", force))
+        return ["cleaned"]
+
+    def fake_asyncio_run(coro):
+        coro.close()
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(framework, "cleanup_runtime", fake_cleanup_runtime)
+    monkeypatch.setattr(asyncio, "run", fake_asyncio_run)
+
+    import bub.channels.manager as channel_manager_module
+
+    monkeypatch.setattr(channel_manager_module, "ChannelManager", DummyManager)
+
+    with pytest.raises(KeyboardInterrupt):
+        cli.chat(DummyCtx(), chat_id="room", session_id="sess")
+
+    assert calls[0] == ("metadata", ("room", "sess"))
+    assert calls[1] == ("cleanup", False)

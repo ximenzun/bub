@@ -158,7 +158,13 @@ async def test_build_prompt_restores_recent_image_when_user_references_it(
     assert state["_inbound_media_parts"] == restored
     assert state["_inbound_resource_refs"] == recent_refs
     assert state["_inbound_media_refs"] == [
-        {"channel": "lark", "message_id": "om_1", "file_key": "img_1", "resource_type": "image", "content_type": "image/*"}
+        {
+            "channel": "lark",
+            "message_id": "om_1",
+            "file_key": "img_1",
+            "resource_type": "image",
+            "content_type": "image/*",
+        }
     ]
 
 
@@ -194,7 +200,9 @@ async def test_build_prompt_includes_quoted_message_metadata(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
-async def test_build_prompt_restores_lark_reply_target_from_tape(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+async def test_build_prompt_restores_lark_reply_target_from_tape(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
     _, impl, agent = _build_impl(tmp_path)
     restored = [{"type": "image_url", "image_url": {"url": "data:image/png;base64,cG5n"}}]
 
@@ -460,12 +468,13 @@ def _async_return(value):
     return runner
 
 
-
 def test_render_outbound_returns_empty_when_suppressed(tmp_path: Path) -> None:
     _, impl, _ = _build_impl(tmp_path)
-    message = ChannelMessage(session_id='s', channel='cli', chat_id='room', content='hello')
+    message = ChannelMessage(session_id="s", channel="cli", chat_id="room", content="hello")
 
-    rendered = impl.render_outbound(message=message, session_id='s', state={'_suppress_default_outbound': True}, model_output='ignored')
+    rendered = impl.render_outbound(
+        message=message, session_id="s", state={"_suppress_default_outbound": True}, model_output="ignored"
+    )
 
     assert rendered == []
 
@@ -475,15 +484,15 @@ async def test_framework_collect_outbounds_returns_empty_when_fallback_is_suppre
     framework = BubFramework()
 
     async def call_many(name: str, **kwargs: object) -> list[object]:
-        assert name == 'render_outbound'
+        assert name == "render_outbound"
         return []
 
     framework._hook_runtime.call_many = call_many  # type: ignore[method-assign]
 
     outbounds = await framework._collect_outbounds(
-        message={'channel': 'lark', 'chat_id': 'oc_123'},
-        session_id='lark:acct:oc_123:main',
-        state={'_suppress_default_outbound': True},
+        message={"channel": "lark", "chat_id": "oc_123"},
+        session_id="lark:acct:oc_123:main",
+        state={"_suppress_default_outbound": True},
         model_output='{"ok": true}',
     )
 
