@@ -167,6 +167,38 @@ async def test_context_snapshot_collects_structured_resources_without_dumping_lo
 
 
 @pytest.mark.asyncio
+async def test_context_snapshot_preserves_non_image_resource_refs(tmp_path: Path) -> None:
+    service, _ = _make_tape_service(tmp_path)
+    tape = service.session_tape("user/session", tmp_path)
+    await service.ensure_bootstrap_anchor(tape.name)
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"RIFF0000")
+    await tape.append_async(
+        TapeEntry.message(
+            {
+                "role": "user",
+                "content": "[audio]",
+                RESOURCE_REFS_KEY: [
+                    {
+                        "kind": "audio",
+                        "scope": "message",
+                        "content_type": "audio/wav",
+                        "locator": {"kind": "path", "path": str(audio_path)},
+                    }
+                ],
+            }
+        )
+    )
+
+    snapshot = await service.context_snapshot(tape.name, runtime_state={"session_id": "user/session"})
+
+    assert len(snapshot.resources) == 1
+    assert snapshot.resources[0]["kind"] == "audio"
+    assert snapshot.resources[0]["locator"]["path"] == str(audio_path)
+    assert snapshot.messages[0]["content"] == "[audio]"
+
+
+@pytest.mark.asyncio
 async def test_tape_search_defaults_cover_anchor_and_event_entries(tmp_path: Path) -> None:
     service, _ = _make_tape_service(tmp_path)
     tape_name = await _seed_tape(service, tmp_path)

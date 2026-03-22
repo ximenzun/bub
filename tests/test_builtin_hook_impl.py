@@ -12,7 +12,7 @@ from bub.builtin.resource_refs import RESOURCE_REFS_KEY
 from bub.builtin.store import FileTapeStore
 from bub.channels.message import ChannelMessage, MediaItem
 from bub.framework import BubFramework
-from bub.social import ConversationRef, ReplyGrant
+from bub.social import Attachment, ConversationRef, ReplyGrant
 
 
 class RecordingLifespan:
@@ -201,6 +201,40 @@ async def test_build_prompt_includes_quoted_message_metadata(tmp_path: Path) -> 
 
 
 @pytest.mark.asyncio
+async def test_build_prompt_persists_non_image_attachment_resource_refs(tmp_path: Path) -> None:
+    _, impl, _ = _build_impl(tmp_path)
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"RIFF0000")
+    message = ChannelMessage(
+        session_id="s",
+        channel="wechat_clawbot",
+        chat_id="room",
+        content="[audio]",
+        attachments=[Attachment(content_type="audio/wav", metadata={"path": str(audio_path)})],
+    )
+
+    state: dict[str, object] = {}
+    prompt = await impl.build_prompt(message, session_id="s", state=state)
+
+    assert prompt == "[audio]"
+    assert state["_inbound_resource_refs"] == [
+        {
+            "kind": "audio",
+            "scope": "message",
+            "content_type": "audio/wav",
+            "locator": {"kind": "path", "path": str(audio_path)},
+        }
+    ]
+    assert state["_inbound_media_refs"] == [
+        {
+            "channel": "unknown",
+            "url": str(audio_path),
+            "content_type": "audio/wav",
+        }
+    ]
+
+
+@pytest.mark.asyncio
 async def test_build_prompt_restores_lark_reply_target_from_tape(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -273,6 +307,25 @@ async def test_build_prompt_restores_lark_reply_target_from_tape(
     assert isinstance(prompt, list)
     assert prompt[0]["text"] == "Quoted message:\n[Lark image]"
     assert prompt[1]["image_url"]["url"] == "data:image/png;base64,cG5n"
+
+
+@pytest.mark.asyncio
+async def test_image_parts_from_refs_ignores_non_image_path_refs(tmp_path: Path) -> None:
+    audio_path = tmp_path / "voice.wav"
+    audio_path.write_bytes(b"RIFF0000")
+
+    parts = await hook_impl_module._image_parts_from_refs(
+        [
+            {
+                "kind": "audio",
+                "scope": "message",
+                "content_type": "audio/wav",
+                "locator": {"kind": "path", "path": str(audio_path)},
+            }
+        ]
+    )
+
+    assert parts == []
 
 
 @pytest.mark.asyncio

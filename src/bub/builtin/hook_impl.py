@@ -152,10 +152,10 @@ class BuiltinImpl:
                 _non_quoted_attachments(cast("list[Attachment]", attachments))
             )
         media_refs = _message_resource_refs(message)
+        if media_refs:
+            state["_inbound_resource_refs"] = clone_resource_refs(media_refs)
+            state["_inbound_media_refs"] = _coerce_media_refs(media_refs)
         if media_parts:
-            if media_refs:
-                state["_inbound_resource_refs"] = clone_resource_refs(media_refs)
-                state["_inbound_media_refs"] = _coerce_media_refs(media_refs)
             if _is_image_only_content(content):
                 text = (
                     f"{text}\n\nThe user sent an image without additional text. "
@@ -401,10 +401,11 @@ def _non_quoted_attachments(attachments: list[Attachment]) -> list[Attachment]:
 
 
 def _resource_ref_from_attachment(attachment: Attachment, *, channel: str) -> ResourceRef | None:
-    if not attachment.content_type.startswith("image/"):
+    kind = _resource_kind_from_attachment(attachment)
+    if kind is None:
         return None
     ref: ResourceRef = {
-        "kind": "image",
+        "kind": kind,
         "scope": _attachment_scope(attachment),
         "content_type": attachment.content_type,
     }
@@ -520,6 +521,8 @@ async def _image_part_from_ref(ref: ResourceRef) -> dict[str, object] | None:
     if locator.get("kind") != "channel_file" or locator.get("channel") != "lark":
         source = locator.get("url") or locator.get("path")
         content_type = str(ref.get("content_type") or "image/*")
+        if ref.get("kind") != "image" and not content_type.startswith("image/"):
+            return None
         if isinstance(source, str):
             data_url = await _attachment_data_url(content_type, source)
             if data_url is not None:
@@ -558,6 +561,21 @@ def _fetch_lark_image_part_sync(ref: ResourceRef, message_id: str, file_key: str
     headers = getattr(raw, "headers", {}) if raw is not None else {}
     mime_type = headers.get("Content-Type") if isinstance(headers, dict) else None
     return _image_url_part(mime_type or ref.get("content_type") or "image/jpeg", content)
+
+
+def _resource_kind_from_attachment(attachment: Attachment) -> str | None:
+    content_type = attachment.content_type.casefold()
+    if content_type.startswith("image/"):
+        return "image"
+    if content_type.startswith("audio/"):
+        return "audio"
+    if content_type.startswith("video/"):
+        return "video"
+    if content_type == "application/pdf":
+        return "pdf"
+    if content_type:
+        return "file"
+    return None
 
 
 async def _quoted_prompt_context(
