@@ -86,7 +86,9 @@ def test_get_channel_controls_prefers_high_priority_plugin_for_duplicate_names()
         def provide_channel_controls(self):
             return [
                 ChannelControl(channel="shared", summary="high", capabilities=basic_channel_capabilities("shared")),
-                ChannelControl(channel="high-only", summary="high", capabilities=basic_channel_capabilities("high-only")),
+                ChannelControl(
+                    channel="high-only", summary="high", capabilities=basic_channel_capabilities("high-only")
+                ),
             ]
 
     framework._plugin_manager.register(LowPriorityPlugin(), name="low")
