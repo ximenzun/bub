@@ -7,7 +7,9 @@ import pytest
 from typer.testing import CliRunner
 
 import bub.builtin.cli as cli
+from bub.channels.control import ChannelAccountStatus, ChannelControl, ChannelLoginResult
 from bub.framework import BubFramework
+from bub.social import basic_channel_capabilities
 
 
 def _create_app() -> object:
@@ -85,6 +87,53 @@ def test_cleanup_command_renders_framework_cleanup_lines(monkeypatch, tmp_path: 
     assert result.exit_code == 0
     assert "cleaned: browser runtime" in result.stdout
     assert "cleaned: test plugin" in result.stdout
+
+
+def test_channels_commands_render_control_plane_data(monkeypatch) -> None:
+    control = ChannelControl(
+        channel="wechat_clawbot",
+        summary="WeChat native bridge",
+        capabilities=basic_channel_capabilities("wechat_clawbot"),
+        status_handler=lambda: [
+            ChannelAccountStatus(
+                channel="wechat_clawbot",
+                account_id="acct-1",
+                configured=True,
+                running=True,
+                state="active",
+                detail="long-poll connected",
+            )
+        ],
+        login_handler=lambda request: ChannelLoginResult(
+            channel="wechat_clawbot",
+            account_id=request.account_id or "acct-1",
+            lines=("login: ok", f"account_id: {request.account_id or 'acct-1'}"),
+        ),
+        logout_handler=lambda account_id, force: [f"logout: {account_id or 'all'} force={force}"],
+    )
+
+    monkeypatch.setattr(BubFramework, "get_channel_controls", lambda self: {"wechat_clawbot": control})
+
+    runner = CliRunner()
+    list_result = runner.invoke(_create_app(), ["channels", "list"])
+    status_result = runner.invoke(_create_app(), ["channels", "status", "wechat_clawbot"])
+    login_result = runner.invoke(_create_app(), ["channels", "login", "wechat_clawbot", "--account", "acct-9"])
+    logout_result = runner.invoke(_create_app(), ["channels", "logout", "wechat_clawbot", "--account", "acct-9"])
+
+    assert list_result.exit_code == 0
+    assert "wechat_clawbot" in list_result.stdout
+    assert "WeChat native bridge" in list_result.stdout
+
+    assert status_result.exit_code == 0
+    assert "wechat_clawbot/acct-1" in status_result.stdout
+    assert "state: active" in status_result.stdout
+
+    assert login_result.exit_code == 0
+    assert "login: ok" in login_result.stdout
+    assert "account_id: acct-9" in login_result.stdout
+
+    assert logout_result.exit_code == 0
+    assert "logout: acct-9 force=False" in logout_result.stdout
 
 
 def test_gateway_cleans_up_runtime_on_keyboard_interrupt(monkeypatch) -> None:

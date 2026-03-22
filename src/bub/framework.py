@@ -19,6 +19,7 @@ from bub.types import Envelope, MessageHandler, OutboundChannelRouter, TurnResul
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
+    from bub.channels.control import ChannelControl
     from bub.commands import SlashCommandSpec
 
 
@@ -211,6 +212,14 @@ class BubFramework:
                 if channel.name not in channels:
                     channels[channel.name] = channel
         return channels
+
+    def get_channel_controls(self) -> dict[str, ChannelControl]:
+        controls: dict[str, ChannelControl] = {}
+        for result in self._hook_runtime.call_many_sync("provide_channel_controls"):
+            for control in result:
+                if control.channel not in controls:
+                    controls[control.channel] = control
+        return controls
 
     def get_tape_store(self) -> TapeStore | AsyncTapeStore | None:
         return self._hook_runtime.call_first_sync("provide_tape_store")

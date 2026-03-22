@@ -6,6 +6,7 @@ from __future__ import annotations
 import asyncio
 import os
 from pathlib import Path
+from typing import Annotated
 
 import typer
 from republic.auth.openai_codex import CodexOAuthLoginError, OpenAICodexOAuthTokens, login_openai_codex_oauth
@@ -17,6 +18,7 @@ from bub.builtin.gateway_registry import (
     list_gateway_records,
     release_gateway_slot,
 )
+from bub.channels.control import ChannelLoginRequest
 from bub.channels.message import ChannelMessage
 from bub.envelope import field_of
 from bub.framework import BubFramework
@@ -139,6 +141,111 @@ def cleanup(
     lines = framework.cleanup_runtime(force=force)
     if not lines:
         typer.echo("(no plugin cleanup actions reported)")
+        return
+    typer.echo("\n".join(lines))
+
+
+def channels_list(ctx: typer.Context) -> None:
+    """List installed channels with control-plane support."""
+
+    framework = ctx.ensure_object(BubFramework)
+    controls = framework.get_channel_controls()
+    if not controls:
+        typer.echo("(no channel controls reported)")
+        return
+    for control in controls.values():
+        capability_summary = control.capabilities.provisioning_mode
+        typer.echo(f"{control.channel}\nsummary: {control.summary or '-'}\nprovisioning: {capability_summary}\n")
+
+
+def channels_status(
+    ctx: typer.Context,
+    channel: str | None = typer.Argument(None, help="Optional channel id to inspect."),
+) -> None:
+    """Show channel account status."""
+
+    framework = ctx.ensure_object(BubFramework)
+    controls = framework.get_channel_controls()
+    selected = controls.get(channel) if channel else None
+    if channel and selected is None:
+        typer.echo(f"Unknown channel control: {channel}", err=True)
+        raise typer.Exit(1)
+    targets = [selected] if selected is not None else list(controls.values())
+    if not targets:
+        typer.echo("(no channel controls reported)")
+        return
+    rendered = False
+    for control in targets:
+        statuses = control.status()
+        if not statuses:
+            typer.echo(f"{control.channel}\n(no reported accounts)\n")
+            rendered = True
+            continue
+        for item in statuses:
+            typer.echo(
+                f"{item.channel}/{item.account_id}\n"
+                f"configured: {item.configured}\n"
+                f"running: {item.running}\n"
+                f"state: {item.state}\n"
+                f"detail: {item.detail or '-'}\n"
+                f"last_error: {item.last_error or '-'}\n"
+                f"last_event_at: {item.last_event_at or '-'}\n"
+                f"last_inbound_at: {item.last_inbound_at or '-'}\n"
+                f"last_outbound_at: {item.last_outbound_at or '-'}\n"
+            )
+            rendered = True
+    if not rendered:
+        typer.echo("(no reported accounts)")
+
+
+def channels_login(
+    ctx: typer.Context,
+    channel: str = typer.Argument(..., help="Channel id to log into."),
+    account: Annotated[str | None, typer.Option("--account", help="Optional account id to re-login.")] = None,
+    force: bool = typer.Option(False, "--force", help="Force a fresh login flow even when credentials already exist."),
+    timeout: Annotated[
+        float | None,
+        typer.Option("--timeout", help="Optional login timeout in seconds for channels that support it."),
+    ] = None,
+) -> None:
+    """Run a channel login / provisioning flow."""
+
+    framework = ctx.ensure_object(BubFramework)
+    controls = framework.get_channel_controls()
+    control = controls.get(channel)
+    if control is None:
+        typer.echo(f"Unknown channel control: {channel}", err=True)
+        raise typer.Exit(1)
+    try:
+        result = control.login(ChannelLoginRequest(account_id=account, force=force, timeout_seconds=timeout))
+    except NotImplementedError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    if result.lines:
+        typer.echo("\n".join(result.lines))
+
+
+def channels_logout(
+    ctx: typer.Context,
+    channel: str = typer.Argument(..., help="Channel id to log out from."),
+    account: Annotated[str | None, typer.Option("--account", help="Optional account id to remove.")] = None,
+    force: bool = typer.Option(False, "--force", help="Allow stronger logout behavior when supported."),
+) -> None:
+    """Remove channel credentials or disable an account."""
+
+    framework = ctx.ensure_object(BubFramework)
+    controls = framework.get_channel_controls()
+    control = controls.get(channel)
+    if control is None:
+        typer.echo(f"Unknown channel control: {channel}", err=True)
+        raise typer.Exit(1)
+    try:
+        lines = control.logout(account, force)
+    except NotImplementedError as exc:
+        typer.echo(str(exc), err=True)
+        raise typer.Exit(1) from exc
+    if not lines:
+        typer.echo("(no logout actions reported)")
         return
     typer.echo("\n".join(lines))
 

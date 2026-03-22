@@ -6,9 +6,11 @@ import typer
 from typer.testing import CliRunner
 
 from bub.channels.base import Channel
+from bub.channels.control import ChannelControl
 from bub.commands import SlashCommandSpec
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
+from bub.social import basic_channel_capabilities
 
 
 class NamedChannel(Channel):
@@ -68,6 +70,36 @@ def test_get_channels_prefers_high_priority_plugin_for_duplicate_names() -> None
     assert channels["high-only"].label == "high"
 
 
+def test_get_channel_controls_prefers_high_priority_plugin_for_duplicate_names() -> None:
+    framework = BubFramework()
+
+    class LowPriorityPlugin:
+        @hookimpl
+        def provide_channel_controls(self):
+            return [
+                ChannelControl(channel="shared", summary="low", capabilities=basic_channel_capabilities("shared")),
+                ChannelControl(channel="low-only", summary="low", capabilities=basic_channel_capabilities("low-only")),
+            ]
+
+    class HighPriorityPlugin:
+        @hookimpl
+        def provide_channel_controls(self):
+            return [
+                ChannelControl(channel="shared", summary="high", capabilities=basic_channel_capabilities("shared")),
+                ChannelControl(channel="high-only", summary="high", capabilities=basic_channel_capabilities("high-only")),
+            ]
+
+    framework._plugin_manager.register(LowPriorityPlugin(), name="low")
+    framework._plugin_manager.register(HighPriorityPlugin(), name="high")
+
+    controls = framework.get_channel_controls()
+
+    assert set(controls) == {"shared", "low-only", "high-only"}
+    assert controls["shared"].summary == "high"
+    assert controls["low-only"].summary == "low"
+    assert controls["high-only"].summary == "high"
+
+
 def test_get_system_prompt_uses_priority_order_and_skips_empty_results() -> None:
     framework = BubFramework()
 
@@ -106,6 +138,7 @@ def test_builtin_cli_exposes_login_and_keeps_message_hidden_alias() -> None:
 
     assert help_result.exit_code == 0
     assert "login" in help_result.stdout
+    assert "channels" in help_result.stdout
     assert "gateway" in help_result.stdout
     assert "│ message" not in help_result.stdout
     assert alias_result.exit_code == 0
