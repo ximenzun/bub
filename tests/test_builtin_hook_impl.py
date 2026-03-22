@@ -314,16 +314,14 @@ async def test_image_parts_from_refs_ignores_non_image_path_refs(tmp_path: Path)
     audio_path = tmp_path / "voice.wav"
     audio_path.write_bytes(b"RIFF0000")
 
-    parts = await hook_impl_module._image_parts_from_refs(
-        [
-            {
-                "kind": "audio",
-                "scope": "message",
-                "content_type": "audio/wav",
-                "locator": {"kind": "path", "path": str(audio_path)},
-            }
-        ]
-    )
+    parts = await hook_impl_module._image_parts_from_refs([
+        {
+            "kind": "audio",
+            "scope": "message",
+            "content_type": "audio/wav",
+            "locator": {"kind": "path", "path": str(audio_path)},
+        }
+    ])
 
     assert parts == []
 

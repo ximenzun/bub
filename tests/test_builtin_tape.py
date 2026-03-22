@@ -174,20 +174,18 @@ async def test_context_snapshot_preserves_non_image_resource_refs(tmp_path: Path
     audio_path = tmp_path / "voice.wav"
     audio_path.write_bytes(b"RIFF0000")
     await tape.append_async(
-        TapeEntry.message(
-            {
-                "role": "user",
-                "content": "[audio]",
-                RESOURCE_REFS_KEY: [
-                    {
-                        "kind": "audio",
-                        "scope": "message",
-                        "content_type": "audio/wav",
-                        "locator": {"kind": "path", "path": str(audio_path)},
-                    }
-                ],
-            }
-        )
+        TapeEntry.message({
+            "role": "user",
+            "content": "[audio]",
+            RESOURCE_REFS_KEY: [
+                {
+                    "kind": "audio",
+                    "scope": "message",
+                    "content_type": "audio/wav",
+                    "locator": {"kind": "path", "path": str(audio_path)},
+                }
+            ],
+        })
     )
 
     snapshot = await service.context_snapshot(tape.name, runtime_state={"session_id": "user/session"})
