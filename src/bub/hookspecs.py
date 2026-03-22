@@ -13,6 +13,7 @@ from bub.types import Envelope, MessageHandler, State
 
 if TYPE_CHECKING:
     from bub.channels.base import Channel
+    from bub.channels.control import ChannelControl
     from bub.commands import SlashCommandSpec
 
 BUB_HOOK_NAMESPACE = "bub"
@@ -104,4 +105,9 @@ class BubHookSpecs:
     @hookspec
     def provide_channels(self, message_handler: MessageHandler) -> list[Channel]:
         """Provide a list of channels for receiving messages."""
+        raise NotImplementedError
+
+    @hookspec
+    def provide_channel_controls(self) -> list[ChannelControl]:
+        """Provide control-plane operations for channels such as status or login."""
         raise NotImplementedError

@@ -12,6 +12,7 @@ from bub.builtin.resource_refs import RESOURCE_REFS_KEY
 from bub.builtin.store import FileTapeStore
 from bub.channels.message import ChannelMessage, MediaItem
 from bub.framework import BubFramework
+from bub.social import ConversationRef, ReplyGrant
 
 
 class RecordingLifespan:
@@ -419,6 +420,8 @@ async def test_dispatch_outbound_uses_framework_router(tmp_path: Path) -> None:
 def test_render_outbound_preserves_message_metadata(tmp_path: Path) -> None:
     _, impl, _ = _build_impl(tmp_path)
     reply_token = "-".join(["reply", "grant", "1"])
+    conversation = ConversationRef(platform="telegram", chat_id="room", account_id="acct-1", surface="direct")
+    reply_grant = ReplyGrant(mode="token", token=reply_token, reply_to_message_id="77")
 
     rendered = impl.render_outbound(
         message={
@@ -432,6 +435,10 @@ def test_render_outbound_preserves_message_metadata(tmp_path: Path) -> None:
                 "account_id": "acct-1",
                 "wecom_reply_token": reply_token,
             },
+            "conversation": conversation,
+            "reply_grant": reply_grant,
+            "attachments": [{"content_type": "image/png", "url": "file:///tmp/inbound.png"}],
+            "metadata": {"origin": "test"},
         },
         session_id="session",
         state={},
@@ -450,6 +457,10 @@ def test_render_outbound_preserves_message_metadata(tmp_path: Path) -> None:
     assert outbound.context["reply_to_message_id"] == "77"
     assert outbound.context["thread_id"] == "15"
     assert outbound.context["wecom_reply_token"] == reply_token
+    assert outbound.conversation == conversation
+    assert outbound.reply_grant == reply_grant
+    assert outbound.attachments == []
+    assert outbound.metadata == {"origin": "test"}
 
 
 def test_provide_tape_store_uses_agent_home_directory(tmp_path: Path) -> None:

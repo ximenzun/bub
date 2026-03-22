@@ -179,6 +179,12 @@ class BuiltinImpl:
         app.command("cleanup")(cli.cleanup)
         app.command("gateway-status")(cli.gateway_status)
         app.command("gateway-kill")(cli.gateway_kill)
+        channels_app = typer.Typer(help="Manage provisioned channels.")
+        channels_app.command("list")(cli.channels_list)
+        channels_app.command("status")(cli.channels_status)
+        channels_app.command("login")(cli.channels_login)
+        channels_app.command("logout")(cli.channels_logout)
+        app.add_typer(channels_app, name="channels")
         app.command("hooks", hidden=True)(cli.list_hooks)
         app.command("message", hidden=True)(app.command("gateway")(cli.gateway))
 
@@ -276,6 +282,10 @@ class BuiltinImpl:
             kind=kind,
             account_id=account_id,
             context=context,
+            conversation=field_of(message, "conversation"),
+            sender=field_of(message, "sender"),
+            reply_grant=field_of(message, "reply_grant"),
+            metadata=field_of(message, "metadata", {}),
         )
         message_id = _context_string(context, "message_id")
         if message_id is not None:
