@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import signal
 from pathlib import Path
 
 import pytest
@@ -229,3 +230,65 @@ def test_chat_cleans_up_runtime_on_keyboard_interrupt(monkeypatch) -> None:
 
     assert calls[0] == ("metadata", ("room", "sess"))
     assert calls[1] == ("cleanup", False)
+
+
+def test_install_shutdown_signal_handlers_skips_unsupported(monkeypatch) -> None:
+    class FakeLoop:
+        def __init__(self) -> None:
+            self.calls: list[int] = []
+
+        def add_signal_handler(self, signum: int, callback) -> None:
+            del callback
+            self.calls.append(signum)
+            if signum == 999:
+                raise NotImplementedError
+
+    loop = FakeLoop()
+    monkeypatch.setattr(cli, "_shutdown_signals", lambda: (int(signal.SIGTERM), 999))
+
+    installed = cli._install_shutdown_signal_handlers(loop, lambda: None)
+
+    assert installed == (int(signal.SIGTERM),)
+    assert loop.calls == [int(signal.SIGTERM), 999]
+
+
+@pytest.mark.asyncio
+async def test_run_channel_manager_cancels_manager_on_shutdown_signal(monkeypatch) -> None:
+    callbacks: dict[str, object] = {}
+
+    class DummyManager:
+        def __init__(self) -> None:
+            self.started = asyncio.Event()
+            self.cancelled = False
+
+        async def listen_and_run(self) -> None:
+            self.started.set()
+            try:
+                await asyncio.Event().wait()
+            except asyncio.CancelledError:
+                self.cancelled = True
+
+    manager = DummyManager()
+
+    def fake_install(loop: asyncio.AbstractEventLoop, callback) -> tuple[int, ...]:
+        del loop
+        callbacks["callback"] = callback
+        return (int(signal.SIGTERM),)
+
+    def fake_remove(loop: asyncio.AbstractEventLoop, signals_to_remove: tuple[int, ...]) -> None:
+        del loop
+        callbacks["removed"] = signals_to_remove
+
+    monkeypatch.setattr(cli, "_install_shutdown_signal_handlers", fake_install)
+    monkeypatch.setattr(cli, "_remove_shutdown_signal_handlers", fake_remove)
+
+    task = asyncio.create_task(cli._run_channel_manager(manager))
+    await manager.started.wait()
+
+    shutdown_callback = callbacks["callback"]
+    assert callable(shutdown_callback)
+    shutdown_callback()
+    await task
+
+    assert manager.cancelled is True
+    assert callbacks["removed"] == (int(signal.SIGTERM),)
