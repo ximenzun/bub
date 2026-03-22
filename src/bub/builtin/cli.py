@@ -4,9 +4,11 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import os
+import signal
 from pathlib import Path
-from typing import Annotated
+from typing import Annotated, Callable, Protocol
 
 import typer
 from republic.auth.openai_codex import CodexOAuthLoginError, OpenAICodexOAuthTokens, login_openai_codex_oauth
@@ -24,6 +26,57 @@ from bub.envelope import field_of
 from bub.framework import BubFramework
 
 DEFAULT_CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
+
+
+class _ChannelManagerRunner(Protocol):
+    async def listen_and_run(self) -> None: ...
+
+
+def _shutdown_signals() -> tuple[int, ...]:
+    signals: list[int] = []
+    for name in ("SIGTERM", "SIGHUP"):
+        value = getattr(signal, name, None)
+        if value is not None:
+            signals.append(int(value))
+    return tuple(signals)
+
+
+def _install_shutdown_signal_handlers(loop: asyncio.AbstractEventLoop, callback: Callable[[], None]) -> tuple[int, ...]:
+    installed: list[int] = []
+    for signum in _shutdown_signals():
+        try:
+            loop.add_signal_handler(signum, callback)
+        except (NotImplementedError, RuntimeError, ValueError):
+            continue
+        installed.append(signum)
+    return tuple(installed)
+
+
+def _remove_shutdown_signal_handlers(loop: asyncio.AbstractEventLoop, signals_to_remove: tuple[int, ...]) -> None:
+    for signum in signals_to_remove:
+        with contextlib.suppress(NotImplementedError, RuntimeError, ValueError):
+            loop.remove_signal_handler(signum)
+
+
+async def _run_channel_manager(manager: _ChannelManagerRunner) -> None:
+    loop = asyncio.get_running_loop()
+    manager_task = asyncio.create_task(manager.listen_and_run())
+    shutdown_requested = False
+
+    def _request_shutdown() -> None:
+        nonlocal shutdown_requested
+        shutdown_requested = True
+        if not manager_task.done():
+            manager_task.cancel()
+
+    installed = _install_shutdown_signal_handlers(loop, _request_shutdown)
+    try:
+        await manager_task
+    except asyncio.CancelledError:
+        if not shutdown_requested:
+            raise
+    finally:
+        _remove_shutdown_signal_handlers(loop, installed)
 
 
 def run(
@@ -80,7 +133,7 @@ def gateway(
         typer.echo(str(exc), err=True)
         raise typer.Exit(1) from exc
     try:
-        asyncio.run(manager.listen_and_run())
+        asyncio.run(_run_channel_manager(manager))
     finally:
         try:
             framework.cleanup_runtime(force=False)
@@ -267,7 +320,7 @@ def chat(
         raise typer.Exit(1)
     channel.set_metadata(chat_id=chat_id, session_id=session_id)  # type: ignore[attr-defined]
     try:
-        asyncio.run(manager.listen_and_run())
+        asyncio.run(_run_channel_manager(manager))
     finally:
         framework.cleanup_runtime(force=False)
 
