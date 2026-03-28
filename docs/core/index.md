@@ -6,6 +6,7 @@ This section groups core runtime design and behavior.
 
 - [Architecture](../architecture.md): execution lifecycle, hook precedence, and error semantics.
 - [Key Features](../features.md): high-level capability summary and current boundaries.
+- [Onboarding Surfaces](../onboarding-surfaces.md): V2 control-plane, manifest, secret, and surface model.
 
 ## Suggested Reading Order
 

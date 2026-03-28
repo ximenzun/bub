@@ -19,6 +19,7 @@ from bub.builtin.context import (
     select_messages_and_resources,
 )
 from bub.builtin.store import ForkTapeStore
+from bub.workspace import workspace_id_for_path
 
 
 @dataclass(frozen=True)
@@ -143,9 +144,9 @@ class TapeService:
         await tape.append_async(TapeEntry.event(name=name, data=payload, **meta))
 
     def session_tape(self, session_id: str, workspace: Path) -> Tape:
-        workspace_hash = hashlib.md5(str(workspace.resolve()).encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+        workspace_id = workspace_id_for_path(workspace, self._archive_path.parent)
         tape_name = (
-            workspace_hash + "__" + hashlib.md5(session_id.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+            workspace_id + "__" + hashlib.md5(session_id.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
         )
         return self._llm.tape(tape_name, context=default_tape_context())
 

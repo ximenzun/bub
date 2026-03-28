@@ -1,6 +1,6 @@
 # CLI
 
-`bub` currently exposes five builtin commands: `run`, `gateway`, `chat`, `login`, and the hidden compatibility command `message`.
+`bub` exposes operator commands for runtime execution, channel control, marketplace onboarding, and authentication.
 
 ## `bub run`
 
@@ -95,6 +95,34 @@ If the upstream endpoint expects a specific OpenAI-compatible request shape, set
 
 ```bash
 BUB_MODEL=openai:gpt-5-codex BUB_API_FORMAT=responses uv run bub chat
+```
+
+## `bub marketplace`
+
+Inspect and drive Bub V2 onboarding manifests:
+
+```bash
+uv run bub marketplace list
+uv run bub marketplace show telegram
+uv run bub marketplace install telegram
+uv run bub marketplace status telegram
+uv run bub marketplace validate telegram
+uv run bub marketplace test-plan telegram
+```
+
+`marketplace install` accepts `--set key=value` for structured config and `--secret key=value` for credentials.
+Without explicit overrides, it runs the manifest-defined interactive CLI onboarding flow.
+Known external plugins may appear as registry hints until their package is installed and contributes a real manifest via `bub.manifests`.
+
+## `bub workspace`
+
+Inspect workspace identity and move a configured Bub workspace between machines:
+
+```bash
+uv run bub workspace status
+uv run bub workspace doctor
+uv run bub workspace export ./bundle.zip --tapes messages --secrets encrypted --passphrase passphrase
+uv run bub workspace import ./bundle.zip --passphrase passphrase --force
 ```
 
 ## Notes

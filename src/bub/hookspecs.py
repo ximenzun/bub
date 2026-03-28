@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from bub.channels.base import Channel
     from bub.channels.control import ChannelControl
     from bub.commands import SlashCommandSpec
+    from bub.onboarding import OnboardingManifest
 
 BUB_HOOK_NAMESPACE = "bub"
 hookspec = pluggy.HookspecMarker(BUB_HOOK_NAMESPACE)
@@ -110,4 +111,9 @@ class BubHookSpecs:
     @hookspec
     def provide_channel_controls(self) -> list[ChannelControl]:
         """Provide control-plane operations for channels such as status or login."""
+        raise NotImplementedError
+
+    @hookspec
+    def provide_onboarding_manifests(self) -> list[OnboardingManifest]:
+        """Provide marketplace/onboarding manifests used by Bub V2 control surfaces."""
         raise NotImplementedError

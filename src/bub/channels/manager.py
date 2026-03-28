@@ -5,8 +5,7 @@ from dataclasses import replace
 from typing import Any
 
 from loguru import logger
-from pydantic import Field
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field
 
 from bub.channels.base import Channel
 from bub.channels.handler import BufferedMessageHandler
@@ -18,11 +17,10 @@ from bub.types import Envelope, MessageHandler
 from bub.utils import wait_until_stopped
 
 
-class ChannelSettings(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="BUB_", extra="ignore", env_file=".env")
-
-    enabled_channels: str = Field(
-        default="all", description="Comma-separated list of enabled channels, or 'all' for all channels."
+class ChannelSettings(BaseModel):
+    enabled_channels: str | list[str] = Field(
+        default="all",
+        description="Comma-separated list of enabled channels, or 'all' for all channels.",
     )
     debounce_seconds: float = Field(
         default=1.0,
@@ -41,15 +39,17 @@ class ChannelSettings(BaseSettings):
 class ChannelManager:
     def __init__(self, framework: BubFramework, enabled_channels: Collection[str] | None = None) -> None:
         self.framework = framework
-        self._channels: dict[str, Channel] = self.framework.get_channels(self.on_receive)
+        self._channels: dict[str, Channel] = {}
+        self._enabled_channels_override = list(enabled_channels) if enabled_channels is not None else None
         self._settings = ChannelSettings()
-        if enabled_channels is not None:
-            self._enabled_channels = list(enabled_channels)
-        else:
-            self._enabled_channels = self._settings.enabled_channels.split(",")
+        self._enabled_channels: list[str] = []
+        self._channel_revisions: dict[str, str] = {}
         self._messages = asyncio.Queue[ChannelMessage]()
         self._ongoing_tasks: set[asyncio.Task] = set()
         self._session_handlers: dict[str, MessageHandler] = {}
+        self._started_channels: set[str] = set()
+        self._reload_runtime_configuration()
+        self._channels = self.framework.get_channels(self.on_receive)
 
     async def on_receive(self, message: ChannelMessage) -> None:
         channel = message.channel
@@ -130,19 +130,144 @@ class ChannelManager:
 
     def enabled_channels(self) -> list[Channel]:
         if "all" in self._enabled_channels:
-            # Exclude 'cli' channel from 'all' to prevent interference with other channels
             return [channel for name, channel in self._channels.items() if name != "cli"]
         return [channel for name, channel in self._channels.items() if name in self._enabled_channels]
 
+    def _enabled_channel_names_for(self, channels: dict[str, Channel]) -> set[str]:
+        if "all" in self._enabled_channels:
+            return {name for name in channels if name != "cli"}
+        return {name for name in channels if name in self._enabled_channels}
+
+    def _reload_runtime_configuration(self) -> None:
+        marketplace_getter = getattr(self.framework, "get_marketplace_service", None)
+        marketplace = marketplace_getter() if callable(marketplace_getter) else None
+        runtime = marketplace.load_runtime("channel_manager") if marketplace is not None else None
+        self._settings = ChannelSettings.model_validate(runtime or {})
+        self._channel_revisions = self._channel_revisions_for(marketplace)
+        if self._enabled_channels_override is not None:
+            self._enabled_channels = list(self._enabled_channels_override)
+            return
+        marketplace_channels = marketplace.enabled_channels() if marketplace is not None else []
+        configured_channels = self._settings.enabled_channels
+        if isinstance(configured_channels, str):
+            fallback_channels = configured_channels.split(",")
+        else:
+            fallback_channels = list(configured_channels)
+        self._enabled_channels = marketplace_channels or fallback_channels
+
+    async def _refresh_runtime(self, stop_event: asyncio.Event) -> None:
+        sync_runtime = getattr(self.framework, "sync_runtime", None)
+        runtime_changed = bool(sync_runtime()) if callable(sync_runtime) else False
+        previous_channels = self._channels
+        previous_enabled = list(self._enabled_channels)
+        previous_channel_revisions = dict(self._channel_revisions)
+        self._reload_runtime_configuration()
+        current_channels = self.framework.get_channels(self.on_receive) if runtime_changed else previous_channels
+        desired_names = self._enabled_channel_names_for(current_channels)
+        active_names = set(self._started_channels)
+        restart_names = {
+            name
+            for name in active_names & desired_names
+            if self._channel_needs_restart(
+                name=name,
+                previous_channels=previous_channels,
+                current_channels=current_channels,
+                previous_channel_revisions=previous_channel_revisions,
+            )
+        }
+        stop_names = (active_names - desired_names) | restart_names
+        start_names = (desired_names - active_names) | restart_names
+
+        for name in sorted((active_names & desired_names) - restart_names):
+            previous_channel = previous_channels.get(name)
+            if previous_channel is not None:
+                current_channels[name] = previous_channel
+
+        for name in sorted(stop_names):
+            channel = previous_channels.get(name)
+            if channel is None:
+                continue
+            await channel.stop()
+            self._started_channels.discard(name)
+
+        self._channels = current_channels
+
+        for name in sorted(start_names):
+            channel = self._channels.get(name)
+            if channel is None:
+                continue
+            await channel.start(stop_event)
+            self._started_channels.add(name)
+
+        if runtime_changed or previous_enabled != self._enabled_channels or stop_names or start_names:
+            logger.info(
+                "channel.manager runtime refreshed runtime_changed={} started={} stopped={}",
+                runtime_changed,
+                sorted(start_names),
+                sorted(stop_names),
+            )
+
+    @staticmethod
+    def _channel_revisions_for(marketplace: Any) -> dict[str, str]:
+        if marketplace is None:
+            return {}
+        manifests_getter = getattr(marketplace, "manifests", None)
+        state_getter = getattr(marketplace, "state", None)
+        if not callable(manifests_getter) or not callable(state_getter):
+            return {}
+        revisions: dict[str, str] = {}
+        for manifest in manifests_getter():
+            channel_name = getattr(manifest, "channel_name", None)
+            plugin_id = getattr(manifest, "plugin_id", None)
+            if not isinstance(channel_name, str) or not channel_name:
+                continue
+            if not isinstance(plugin_id, str) or not plugin_id:
+                continue
+            state = state_getter(plugin_id)
+            if state is None:
+                revisions[channel_name] = "missing"
+                continue
+            updated_at = getattr(state, "updated_at", None)
+            enabled = getattr(state, "enabled", False)
+            revisions[channel_name] = f"{plugin_id}:{enabled}:{updated_at}"
+        return revisions
+
+    def _channel_needs_restart(
+        self,
+        *,
+        name: str,
+        previous_channels: dict[str, Channel],
+        current_channels: dict[str, Channel],
+        previous_channel_revisions: dict[str, str],
+    ) -> bool:
+        previous_channel = previous_channels.get(name)
+        current_channel = current_channels.get(name)
+        if previous_channel is None or current_channel is None:
+            return False
+        if type(previous_channel) is not type(current_channel):
+            return True
+        return previous_channel_revisions.get(name) != self._channel_revisions.get(name)
+
     def _on_task_done(self, task: asyncio.Task) -> None:
-        task.exception()  # to log any exception
+        task.exception()
         self._ongoing_tasks.discard(task)
+
+    async def _watch_runtime_changes(self, stop_event: asyncio.Event) -> None:
+        while not stop_event.is_set():
+            await asyncio.sleep(1.0)
+            try:
+                await self._refresh_runtime(stop_event)
+            except asyncio.CancelledError:
+                return
+            except Exception:
+                logger.exception("channel.manager runtime refresh failed")
 
     async def listen_and_run(self) -> None:
         stop_event = asyncio.Event()
+        refresh_task: asyncio.Task[None] | None = None
         self.framework.bind_outbound_router(self)
-        for channel in self.enabled_channels():
-            await channel.start(stop_event)
+        await self._refresh_runtime(stop_event)
+        refresh_task = asyncio.create_task(self._watch_runtime_changes(stop_event))
         logger.info("channel.manager started listening")
         try:
             while True:
@@ -156,6 +281,11 @@ class ChannelManager:
             logger.exception("channel.manager error")
             raise
         finally:
+            stop_event.set()
+            if refresh_task is not None:
+                refresh_task.cancel()
+                with contextlib.suppress(asyncio.CancelledError):
+                    await refresh_task
             self.framework.bind_outbound_router(None)
             await self.shutdown()
             logger.info("channel.manager stopped")
@@ -169,8 +299,13 @@ class ChannelManager:
                 await task
             count += 1
         logger.info(f"channel.manager cancelled {count} in-flight tasks")
-        for channel in self.enabled_channels():
+        stop_names = self._started_channels | self._enabled_channel_names_for(self._channels)
+        for name in sorted(stop_names):
+            channel = self._channels.get(name)
+            if channel is None:
+                continue
             await channel.stop()
+        self._started_channels.clear()
 
 
 def _channel_message_from_action(action: OutboundAction) -> ChannelMessage | None:

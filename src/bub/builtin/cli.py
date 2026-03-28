@@ -5,9 +5,10 @@ from __future__ import annotations
 
 import asyncio
 import contextlib
-import os
+import json
 import signal
 from collections.abc import Callable
+from enum import StrEnum
 from pathlib import Path
 from typing import Annotated, Protocol
 
@@ -25,6 +26,22 @@ from bub.channels.control import ChannelLoginRequest
 from bub.channels.message import ChannelMessage
 from bub.envelope import field_of
 from bub.framework import BubFramework
+from bub.onboarding import OnboardingCancelledError
+
+
+class _TapeExportOption(StrEnum):
+    none = "none"
+    metadata = "metadata"
+    messages = "messages"
+    full = "full"
+
+
+class _SecretExportOption(StrEnum):
+    none = "none"
+    refs_only = "refs-only"
+    plaintext = "plaintext"
+    encrypted = "encrypted"
+
 
 DEFAULT_CODEX_REDIRECT_URI = "http://localhost:1455/auth/callback"
 
@@ -304,6 +321,232 @@ def channels_logout(
     typer.echo("\n".join(lines))
 
 
+def marketplace_list(ctx: typer.Context) -> None:
+    """List onboarding marketplace entries."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_marketplace_service()
+    registry = framework.get_registry_entries()
+    blocks: list[str] = []
+    for manifest in service.manifests():
+        state = service.state(manifest.plugin_id)
+        blocks.append(
+            f"{manifest.plugin_id}\n"
+            f"title: {manifest.title}\n"
+            f"category: {manifest.category}\n"
+            f"installed: {state is not None}\n"
+            f"enabled: {state.enabled if state is not None else False}\n"
+            f"runtime_available: {manifest.runtime_is_available()}\n"
+            f"surfaces: {', '.join(manifest.surfaces)}\n"
+            f"summary: {manifest.summary}\n"
+        )
+    for plugin_id, entry in sorted(registry.items()):
+        if plugin_id in {manifest.plugin_id for manifest in service.manifests()}:
+            continue
+        blocks.append(
+            f"{plugin_id}\n"
+            f"title: {entry.title}\n"
+            f"category: registry\n"
+            f"installed: False\n"
+            f"enabled: False\n"
+            f"runtime_available: False\n"
+            f"surfaces: provided by plugin package\n"
+            f"summary: {entry.summary}\n"
+            f"install_hint: {entry.install_hint}\n"
+        )
+    typer.echo("\n".join(blocks) if blocks else "(no marketplace entries)")
+
+
+def marketplace_show(
+    ctx: typer.Context,
+    plugin: str = typer.Argument(..., help="Plugin id to inspect."),
+) -> None:
+    """Show one marketplace manifest."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_marketplace_service()
+    try:
+        typer.echo(service.render_manifest(plugin))
+    except KeyError:
+        registry = framework.get_registry_entries().get(plugin)
+        if registry is None:
+            raise
+        typer.echo(
+            f"{registry.title}\n"
+            f"id: {registry.plugin_id}\n"
+            f"category: registry\n"
+            f"summary: {registry.summary}\n"
+            f"package: {registry.package_name}\n"
+            f"install_hint: {registry.install_hint}"
+        )
+
+
+def marketplace_status(
+    ctx: typer.Context,
+    plugin: str | None = typer.Argument(None, help="Optional plugin id to inspect."),
+) -> None:
+    """Show installation and validation status."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_marketplace_service()
+    target_ids = [plugin] if plugin else [manifest.plugin_id for manifest in service.manifests()]
+    typer.echo("\n\n".join("\n".join(service.status_lines(plugin_id)) for plugin_id in target_ids))
+
+
+def marketplace_validate(
+    ctx: typer.Context,
+    plugin: str = typer.Argument(..., help="Plugin id to validate."),
+) -> None:
+    """Validate one marketplace entry."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_marketplace_service()
+    report = service.validate(plugin)
+    typer.echo(f"ok: {report.ok}\nsummary: {report.summary}")
+    for issue in report.issues:
+        typer.echo(f"{issue.level}: {issue.message}")
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+def marketplace_install(
+    ctx: typer.Context,
+    plugin: str = typer.Argument(..., help="Plugin id to install."),
+    set_values: list[str] = typer.Option([], "--set", help="Config override as key=value (value may be JSON)."),
+    secret_values: list[str] = typer.Option([], "--secret", help="Secret override as key=value."),
+    force: bool = typer.Option(False, "--force", help="Re-run onboarding even if already installed."),
+    reset: bool = typer.Option(
+        False, "--reset", help="Start from a blank config instead of reusing the current install."
+    ),
+) -> None:
+    """Install or update a marketplace entry."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_marketplace_service()
+    current = service.state(plugin)
+    if plugin not in {manifest.plugin_id for manifest in service.manifests()}:
+        registry = framework.get_registry_entries().get(plugin)
+        if registry is not None:
+            typer.echo(registry.install_hint, err=True)
+            raise typer.Exit(1)
+    if current is not None and not force and not reset and not set_values and not secret_values:
+        typer.echo(f"{plugin}: already installed; use --force to re-run onboarding")
+        return
+
+    if set_values or secret_values:
+        state = service.install(
+            plugin,
+            config_updates={key: _parse_cli_value(value) for key, value in _parse_key_values(set_values).items()},
+            secret_values=_parse_key_values(secret_values),
+            enable=True,
+            surface="cli",
+            reset=reset,
+        )
+    else:
+        try:
+            from bub.onboarding import renderer_for_surface
+
+            state = service.install_interactive(
+                plugin,
+                surface="cli",
+                renderer=renderer_for_surface("cli"),
+                reset=reset,
+            )
+        except OnboardingCancelledError as exc:
+            typer.echo(str(exc), err=True)
+            raise typer.Exit(1) from exc
+
+    report = service.validate(plugin)
+    typer.echo(
+        f"installed: {state.plugin_id}\n"
+        f"enabled: {state.enabled}\n"
+        f"validation: {report.summary}\n"
+        f"config_keys: {', '.join(sorted(state.config)) if state.config else '-'}\n"
+        f"secret_keys: {', '.join(sorted(state.secret_refs)) if state.secret_refs else '-'}"
+    )
+    if not report.ok:
+        raise typer.Exit(1)
+
+
+def marketplace_uninstall(
+    ctx: typer.Context,
+    plugin: str = typer.Argument(..., help="Plugin id to uninstall."),
+) -> None:
+    """Remove one marketplace entry and stored secrets."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_marketplace_service()
+    service.uninstall(plugin)
+    typer.echo(f"uninstalled: {plugin}")
+
+
+def marketplace_test_plan(
+    ctx: typer.Context,
+    plugin: str | None = typer.Argument(None, help="Optional plugin id to inspect."),
+) -> None:
+    """Render manual/automated test guidance for marketplace entries."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_marketplace_service()
+    if plugin is not None:
+        typer.echo(service.render_test_plan(plugin))
+        return
+    typer.echo("\n\n".join(service.render_test_plan(manifest.plugin_id) for manifest in service.manifests()))
+
+
+def workspace_status(ctx: typer.Context) -> None:
+    """Show stable workspace identity and bundle-related paths."""
+
+    framework = ctx.ensure_object(BubFramework)
+    service = framework.get_workspace_bundle_service()
+    typer.echo(
+        f"workspace: {framework.workspace}\n"
+        f"workspace_id: {service.metadata.workspace_id}\n"
+        f"home: {service.home}\n"
+        f"tape_prefix: {service.metadata.workspace_id}__"
+    )
+
+
+def workspace_doctor(ctx: typer.Context) -> None:
+    """Inspect bundle portability and rebind requirements."""
+
+    framework = ctx.ensure_object(BubFramework)
+    report = framework.get_workspace_bundle_service().doctor()
+    typer.echo(report.render())
+
+
+def workspace_export(
+    ctx: typer.Context,
+    destination: Path = typer.Argument(..., help="Destination bundle zip file."),
+    tapes: _TapeExportOption = typer.Option(_TapeExportOption.messages, "--tapes", help="Tape export mode."),
+    secrets: _SecretExportOption = typer.Option(_SecretExportOption.none, "--secrets", help="Secret export mode."),
+    passphrase: str | None = typer.Option(None, "--passphrase", help="Passphrase for encrypted secret bundles."),
+) -> None:
+    """Export this workspace into a portable bundle."""
+
+    framework = ctx.ensure_object(BubFramework)
+    output = framework.get_workspace_bundle_service().export_bundle(
+        destination,
+        tape_mode=tapes.value,
+        secret_mode=secrets.value,
+        passphrase=passphrase,
+    )
+    typer.echo(f"bundle: {output}")
+
+
+def workspace_import(
+    ctx: typer.Context,
+    bundle: Path = typer.Argument(..., help="Path to a Bub workspace bundle."),
+    passphrase: str | None = typer.Option(None, "--passphrase", help="Passphrase for encrypted secret bundles."),
+    force: bool = typer.Option(False, "--force", help="Replace a different existing workspace id."),
+) -> None:
+    """Import a workspace bundle into the current --workspace target."""
+
+    framework = ctx.ensure_object(BubFramework)
+    manifest = framework.get_workspace_bundle_service().import_bundle(bundle, passphrase=passphrase, force=force)
+    typer.echo(f"workspace_id: {manifest.workspace_id}\ntapes: {manifest.tape_mode}\nsecrets: {manifest.secret_mode}")
+
+
 def chat(
     ctx: typer.Context,
     chat_id: str = typer.Option("local", "--chat-id", help="Chat id"),
@@ -336,7 +579,7 @@ def _prompt_for_codex_redirect(authorize_url: str) -> str:
 def _resolve_codex_home(codex_home: Path | None) -> Path:
     if codex_home is not None:
         return codex_home.expanduser()
-    return Path(os.getenv("CODEX_HOME", "~/.codex")).expanduser()
+    return Path("~/.codex").expanduser()
 
 
 def _render_codex_login_result(tokens: OpenAICodexOAuthTokens, auth_path: Path) -> None:
@@ -344,6 +587,29 @@ def _render_codex_login_result(tokens: OpenAICodexOAuthTokens, auth_path: Path) 
     typer.echo(f"account_id: {tokens.account_id or '-'}")
     typer.echo(f"auth_file: {auth_path}")
     typer.echo("usage: set BUB_MODEL=openai:gpt-5-codex and omit BUB_API_KEY")
+
+
+def _parse_key_values(items: list[str]) -> dict[str, str]:
+    result: dict[str, str] = {}
+    for raw in items:
+        if "=" not in raw:
+            raise typer.BadParameter(f"Expected key=value, got: {raw}")
+        key, value = raw.split("=", 1)
+        key = key.strip()
+        if not key:
+            raise typer.BadParameter(f"Expected non-empty key in: {raw}")
+        result[key] = value
+    return result
+
+
+def _parse_cli_value(value: str):
+    lowered = value.strip().casefold()
+    if lowered in {"true", "false"}:
+        return lowered == "true"
+    try:
+        return json.loads(value)
+    except json.JSONDecodeError:
+        return value
 
 
 def login(

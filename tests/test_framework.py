@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import typer
 from typer.testing import CliRunner
@@ -10,6 +11,7 @@ from bub.channels.control import ChannelControl
 from bub.commands import SlashCommandSpec
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
+from bub.onboarding import OnboardingManifest
 from bub.social import basic_channel_capabilities
 
 
@@ -140,6 +142,7 @@ def test_builtin_cli_exposes_login_and_keeps_message_hidden_alias() -> None:
 
     assert help_result.exit_code == 0
     assert "login" in help_result.stdout
+    assert "marketplace" in help_result.stdout
     assert "channels" in help_result.stdout
     assert "gateway" in help_result.stdout
     assert "│ message" not in help_result.stdout
@@ -170,3 +173,107 @@ def test_get_slash_commands_prefers_high_priority_plugin_for_duplicate_names() -
     commands = framework.get_slash_commands()
 
     assert commands == [git, high]
+
+
+def test_get_onboarding_manifests_prefers_high_priority_plugin_for_duplicate_ids() -> None:
+    framework = BubFramework()
+    framework._load_manifest_entry_points = staticmethod(lambda: [])  # type: ignore[method-assign]
+    low = OnboardingManifest(plugin_id="telegram", title="low", summary="low")
+    high = OnboardingManifest(plugin_id="telegram", title="high", summary="high")
+    extra = OnboardingManifest(plugin_id="websearch", title="websearch", summary="search")
+
+    class LowPriorityPlugin:
+        @hookimpl
+        def provide_onboarding_manifests(self):
+            return [low]
+
+    class HighPriorityPlugin:
+        @hookimpl
+        def provide_onboarding_manifests(self):
+            return [high, extra]
+
+    framework._plugin_manager.register(LowPriorityPlugin(), name="low")
+    framework._plugin_manager.register(HighPriorityPlugin(), name="high")
+
+    manifests = framework.get_onboarding_manifests()
+
+    assert set(manifests) == {"telegram", "websearch"}
+    assert manifests["telegram"].title == "high"
+    assert manifests["websearch"].summary == "search"
+
+
+def test_get_onboarding_manifests_includes_entry_point_manifests(monkeypatch) -> None:
+    framework = BubFramework()
+    external = OnboardingManifest(plugin_id="external", title="external", summary="external")
+
+    def fake_entry_points(*, group: str):
+        if group == "bub.manifests":
+            return [SimpleNamespace(load=lambda: external)]
+        return []
+
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
+
+    manifests = framework.get_onboarding_manifests()
+
+    assert "external" in manifests
+    assert manifests["external"].title == "external"
+
+
+def test_load_hooks_skips_runtime_when_manifest_exists_but_plugin_not_installed(monkeypatch) -> None:
+    framework = BubFramework()
+    external_manifest = OnboardingManifest(plugin_id="external", title="external", summary="external")
+
+    class FakeRuntimePlugin:
+        @hookimpl
+        def system_prompt(self, prompt: str, state: dict[str, str]) -> str:
+            return "runtime"
+
+    def fake_entry_points(*, group: str):
+        if group == "bub.manifests":
+            return [SimpleNamespace(name="external", load=lambda: external_manifest)]
+        if group == "bub":
+            return [SimpleNamespace(name="external", load=lambda: FakeRuntimePlugin())]
+        return []
+
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
+
+    framework.load_hooks()
+
+    status = framework.plugin_status()["external"]
+    assert status.is_success is False
+    assert "not installed/enabled" in (status.detail or "")
+
+
+def test_sync_runtime_reloads_hooks_after_marketplace_install(monkeypatch, tmp_path: Path) -> None:
+    framework = BubFramework()
+    framework.workspace = tmp_path / "workspace"
+    framework.home = tmp_path / "home"
+    external_manifest = OnboardingManifest(plugin_id="external", title="external", summary="external")
+
+    class FakeRuntimePlugin:
+        @hookimpl
+        def system_prompt(self, prompt: str, state: dict[str, str]) -> str:
+            return "runtime"
+
+    def fake_entry_points(*, group: str):
+        if group == "bub.manifests":
+            return [SimpleNamespace(name="external", load=lambda: external_manifest)]
+        if group == "bub":
+            return [SimpleNamespace(name="external", load=lambda: FakeRuntimePlugin())]
+        return []
+
+    import importlib.metadata
+
+    monkeypatch.setattr(importlib.metadata, "entry_points", fake_entry_points)
+
+    framework.load_hooks()
+    assert "external" not in framework.hook_report().get("system_prompt", [])
+
+    framework.get_marketplace_service().install("external")
+
+    assert framework.sync_runtime() is True
+    assert "external" in framework.hook_report()["system_prompt"]
