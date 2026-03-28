@@ -415,7 +415,9 @@ def marketplace_install(
     set_values: list[str] = typer.Option([], "--set", help="Config override as key=value (value may be JSON)."),
     secret_values: list[str] = typer.Option([], "--secret", help="Secret override as key=value."),
     force: bool = typer.Option(False, "--force", help="Re-run onboarding even if already installed."),
-    reset: bool = typer.Option(False, "--reset", help="Start from a blank config instead of reusing the current install."),
+    reset: bool = typer.Option(
+        False, "--reset", help="Start from a blank config instead of reusing the current install."
+    ),
 ) -> None:
     """Install or update a marketplace entry."""
 
@@ -542,11 +544,7 @@ def workspace_import(
 
     framework = ctx.ensure_object(BubFramework)
     manifest = framework.get_workspace_bundle_service().import_bundle(bundle, passphrase=passphrase, force=force)
-    typer.echo(
-        f"workspace_id: {manifest.workspace_id}\n"
-        f"tapes: {manifest.tape_mode}\n"
-        f"secrets: {manifest.secret_mode}"
-    )
+    typer.echo(f"workspace_id: {manifest.workspace_id}\ntapes: {manifest.tape_mode}\nsecrets: {manifest.secret_mode}")
 
 
 def chat(

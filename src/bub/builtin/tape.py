@@ -145,7 +145,9 @@ class TapeService:
 
     def session_tape(self, session_id: str, workspace: Path) -> Tape:
         workspace_id = workspace_id_for_path(workspace, self._archive_path.parent)
-        tape_name = workspace_id + "__" + hashlib.md5(session_id.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+        tape_name = (
+            workspace_id + "__" + hashlib.md5(session_id.encode("utf-8"), usedforsecurity=False).hexdigest()[:16]
+        )
         return self._llm.tape(tape_name, context=default_tape_context())
 
     async def hydrate_context(self, tape: Tape, runtime_state: dict[str, Any] | None = None) -> AnchorSummary | None:

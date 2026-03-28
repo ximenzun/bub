@@ -792,7 +792,9 @@ def test_marketplace_service_retries_secret_step_on_validation_error(tmp_path: P
         ),
     )
     service = MarketplaceService(workspace=workspace, home=home, manifests=[manifest])
-    renderer = StubRenderer(field_values=["responses"], secret_values=["https://example.com/chat-completions", "https://example.com/root"])
+    renderer = StubRenderer(
+        field_values=["responses"], secret_values=["https://example.com/chat-completions", "https://example.com/root"]
+    )
     renderer.review_values = [ReviewSelection(action="install")]
 
     state = service.install_interactive("validated_secret", renderer=renderer)
@@ -820,4 +822,7 @@ def test_validate_model_humanizes_missing_secret_and_global_order_errors(tmp_pat
     report = service.validate("humanized")
     messages = [issue.message for issue in report.issues]
 
-    assert "Provider priority can only include search providers that are enabled. Go back and enable them first." in messages
+    assert (
+        "Provider priority can only include search providers that are enabled. Go back and enable them first."
+        in messages
+    )

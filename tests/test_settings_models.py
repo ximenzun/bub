@@ -37,9 +37,15 @@ def test_channel_settings_accepts_list_enabled_channels() -> None:
 
 
 def test_telegram_settings_accepts_runtime_override_payload() -> None:
-    settings = TelegramSettings(token="123:abc", allow_users="alice", allow_chats="-1001", proxy="http://127.0.0.1:7890")  # noqa: S106
+    token = "123:abc"  # noqa: S105
+    settings = TelegramSettings(
+        token=token,
+        allow_users="alice",
+        allow_chats="-1001",
+        proxy="http://127.0.0.1:7890",
+    )
 
-    assert settings.token == "123:abc"  # noqa: S105
+    assert settings.token == token
     assert settings.allow_users == "alice"
     assert settings.allow_chats == "-1001"
     assert settings.proxy == "http://127.0.0.1:7890"

@@ -43,7 +43,13 @@ def test_workspace_bundle_exports_and_imports_plaintext_secrets_and_tapes(tmp_pa
     tape_root.mkdir(parents=True, exist_ok=True)
     tape_name = f"{workspace_id_for_path(source.workspace, source.home)}__deadbeefdeadbeef"
     (tape_root / f"{tape_name}.jsonl").write_text(
-        json.dumps({"id": 1, "kind": "message", "payload": {"role": "user", "content": "hello"}, "meta": {}, "date": "2026-03-23T00:00:00+00:00"})
+        json.dumps({
+            "id": 1,
+            "kind": "message",
+            "payload": {"role": "user", "content": "hello"},
+            "meta": {},
+            "date": "2026-03-23T00:00:00+00:00",
+        })
         + "\n",
         encoding="utf-8",
     )
@@ -66,7 +72,10 @@ def test_workspace_bundle_exports_and_imports_plaintext_secrets_and_tapes(tmp_pa
 
     assert manifest.secret_mode == "plaintext"  # noqa: S105
     assert manifest.tape_mode == "messages"
-    assert ensure_workspace_metadata(target_workspace, target_home).workspace_id == ensure_workspace_metadata(source.workspace, source.home).workspace_id
+    assert (
+        ensure_workspace_metadata(target_workspace, target_home).workspace_id
+        == ensure_workspace_metadata(source.workspace, source.home).workspace_id
+    )
     assert restored_state is not None
     assert restored_state.config["allow_users"] == ["alice"]
     assert restored_secret == "123:abc"  # noqa: S105

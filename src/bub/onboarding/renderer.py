@@ -78,17 +78,15 @@ class OnboardingRenderer(Protocol):
 
 
 class CliOnboardingRenderer:
-    _STYLE = Style.from_dict(
-        {
-            "": "",
-            "label": "",
-            "toolbar": "italic",
-            "checkbox": "",
-            "checkbox-selected": "#86efac bold",
-            "radio": "",
-            "radio-selected": "#7dd3fc bold",
-        }
-    )
+    _STYLE = Style.from_dict({
+        "": "",
+        "label": "",
+        "toolbar": "italic",
+        "checkbox": "",
+        "checkbox-selected": "#86efac bold",
+        "radio": "",
+        "radio-selected": "#7dd3fc bold",
+    })
 
     def render_info(self, *, manifest, step: OnboardingStep) -> None:
         self._print_section(f"{manifest.title} · {step.title}", _step_guidance_text(step) or manifest.summary)
@@ -290,7 +288,9 @@ class CliOnboardingRenderer:
 
     def prompt_secret(self, *, field: OnboardingField) -> str:
         self._print_section(field.title, _field_guidance_text(field))
-        return str(ptk_prompt("> ", is_password=True, bottom_toolbar="Enter to submit · Ctrl+C to cancel", mouse_support=False))
+        return str(
+            ptk_prompt("> ", is_password=True, bottom_toolbar="Enter to submit · Ctrl+C to cancel", mouse_support=False)
+        )
 
     @staticmethod
     def _print_section(title: str, text: str) -> None:
@@ -333,14 +333,12 @@ class CliOnboardingRenderer:
 
         app: Application[Any] = Application(
             layout=Layout(
-                HSplit(
-                    [
-                        *([Label(title, style="class:label")] if title else []),
-                        *([Label(text)] if text else []),
-                        body,
-                        Label(toolbar, style="class:toolbar"),
-                    ]
-                ),
+                HSplit([
+                    *([Label(title, style="class:label")] if title else []),
+                    *([Label(text)] if text else []),
+                    body,
+                    Label(toolbar, style="class:toolbar"),
+                ]),
                 focused_element=body,
             ),
             key_bindings=kb,
@@ -349,6 +347,7 @@ class CliOnboardingRenderer:
             mouse_support=False,
         )
         return app.run()
+
 
 def renderer_for_surface(surface: str) -> OnboardingRenderer:
     if surface != "cli":

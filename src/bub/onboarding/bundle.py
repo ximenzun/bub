@@ -102,7 +102,9 @@ class WorkspaceBundleService:
             self._write_secrets(bundle, secret_mode=secret_mode, passphrase=passphrase)
         return destination
 
-    def import_bundle(self, bundle_path: Path, *, passphrase: str | None = None, force: bool = False) -> WorkspaceBundleManifest:
+    def import_bundle(
+        self, bundle_path: Path, *, passphrase: str | None = None, force: bool = False
+    ) -> WorkspaceBundleManifest:
         bundle_path = bundle_path.expanduser().resolve()
         with zipfile.ZipFile(bundle_path) as bundle:
             manifest = WorkspaceBundleManifest.model_validate(json.loads(bundle.read("manifest.json").decode("utf-8")))
@@ -139,7 +141,10 @@ class WorkspaceBundleService:
         if secret_mode == "none":  # noqa: S105
             return
         if secret_mode == "refs-only":  # noqa: S105
-            refs = [{"ref": record["meta"]["ref"], "plugin_id": record["meta"]["plugin_id"], "key": record["meta"]["key"]} for record in records]
+            refs = [
+                {"ref": record["meta"]["ref"], "plugin_id": record["meta"]["plugin_id"], "key": record["meta"]["key"]}
+                for record in records
+            ]
             self._write_json(bundle, f"{SECRET_DIR_NAME}/refs.json", {"records": refs})
             return
         if secret_mode == "plaintext":  # noqa: S105

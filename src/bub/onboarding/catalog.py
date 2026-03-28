@@ -357,7 +357,7 @@ def builtin_marketplace_manifests() -> list[OnboardingManifest]:
                     id="agent-runtime",
                     title="Configure agent runtime",
                     mode="manual",
-                    commands=("uv run bub marketplace install agent", "uv run bub run \"hello\""),
+                    commands=("uv run bub marketplace install agent", 'uv run bub run "hello"'),
                     assertions=("The selected model/provider settings should be used without editing `.env`.",),
                 ),
             ),
@@ -396,7 +396,9 @@ def builtin_marketplace_manifests() -> list[OnboardingManifest]:
                     kind="form",
                     title="Channel manager settings",
                     fields=(
-                        OnboardingField(key="enabled_channels", title="Enabled channels", kind="string_list", default=["all"]),
+                        OnboardingField(
+                            key="enabled_channels", title="Enabled channels", kind="string_list", default=["all"]
+                        ),
                         OnboardingField(key="debounce_seconds", title="Debounce seconds", kind="int", default=1),
                         OnboardingField(key="max_wait_seconds", title="Max wait seconds", kind="int", default=10),
                         OnboardingField(key="active_time_window", title="Active time window", kind="int", default=60),
@@ -416,7 +418,12 @@ def builtin_marketplace_manifests() -> list[OnboardingManifest]:
             ),
             surfaces=("cli", "web_modal"),
             capability_tags=("core", "channels"),
-            legacy_env_vars=("BUB_ENABLED_CHANNELS", "BUB_DEBOUNCE_SECONDS", "BUB_MAX_WAIT_SECONDS", "BUB_ACTIVE_TIME_WINDOW"),
+            legacy_env_vars=(
+                "BUB_ENABLED_CHANNELS",
+                "BUB_DEBOUNCE_SECONDS",
+                "BUB_MAX_WAIT_SECONDS",
+                "BUB_ACTIVE_TIME_WINDOW",
+            ),
             runtime_factory=_channel_manager_runtime,
             legacy_env_factory=_channel_manager_env,
             portability=PortabilityPolicy(
@@ -454,13 +461,25 @@ def builtin_marketplace_manifests() -> list[OnboardingManifest]:
                     kind="form",
                     title="Access control",
                     fields=(
-                        OnboardingField(key="allow_users", title="Allowed users (comma separated)", kind="string_list", required=False),
-                        OnboardingField(key="allow_chats", title="Allowed chats (comma separated)", kind="string_list", required=False),
+                        OnboardingField(
+                            key="allow_users",
+                            title="Allowed users (comma separated)",
+                            kind="string_list",
+                            required=False,
+                        ),
+                        OnboardingField(
+                            key="allow_chats",
+                            title="Allowed chats (comma separated)",
+                            kind="string_list",
+                            required=False,
+                        ),
                         OnboardingField(key="proxy", title="Proxy URL", required=False),
                     ),
                     surfaces=("cli", "chat_card", "web_modal"),
                 ),
-                OnboardingStep(id="validate", kind="validate", title="Validate configuration", surfaces=("cli", "chat_card")),
+                OnboardingStep(
+                    id="validate", kind="validate", title="Validate configuration", surfaces=("cli", "chat_card")
+                ),
             ),
             secret_requirements=(SecretRequirement(key="bot_token", title="Telegram bot token"),),
             test_plan=(
@@ -484,7 +503,12 @@ def builtin_marketplace_manifests() -> list[OnboardingManifest]:
             ),
             surfaces=("cli", "chat_card", "chat_text", "web_modal"),
             capability_tags=("channel", "remote_reply", "allowlist"),
-            legacy_env_vars=("BUB_TELEGRAM_TOKEN", "BUB_TELEGRAM_ALLOW_USERS", "BUB_TELEGRAM_ALLOW_CHATS", "BUB_TELEGRAM_PROXY"),
+            legacy_env_vars=(
+                "BUB_TELEGRAM_TOKEN",
+                "BUB_TELEGRAM_ALLOW_USERS",
+                "BUB_TELEGRAM_ALLOW_CHATS",
+                "BUB_TELEGRAM_PROXY",
+            ),
             builtin=True,
             runtime_factory=_telegram_runtime,
             legacy_env_factory=_telegram_env,

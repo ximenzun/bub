@@ -110,7 +110,7 @@ class OnboardingCondition(BaseModel):
             return bool(values.get(self.key) in self.one_of)
         if self.contains is not None:
             current = values.get(self.key)
-            if isinstance(current, (list, tuple, set)):
+            if isinstance(current, list | tuple | set):
                 return bool(self.contains in current)
             return False
         return present

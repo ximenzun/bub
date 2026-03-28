@@ -139,7 +139,9 @@ class BuiltinImpl:
             message.kind = "command"
             return content
         text = content
-        quoted = await _quoted_prompt_context(self._agent_instance(), message=message, session_id=session_id, state=state)
+        quoted = await _quoted_prompt_context(
+            self._agent_instance(), message=message, session_id=session_id, state=state
+        )
 
         media = field_of(message, "media") or []
         attachments = field_of(message, "attachments") or []

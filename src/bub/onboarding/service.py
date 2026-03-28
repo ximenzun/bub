@@ -191,7 +191,9 @@ class MarketplaceService:
         state = self.state(plugin_id)
         if manifest.runtime_factory is None or state is None:
             return None
-        return manifest.runtime_factory(InstallContext(workspace=self.workspace, service=self, manifest=manifest, state=state))
+        return manifest.runtime_factory(
+            InstallContext(workspace=self.workspace, service=self, manifest=manifest, state=state)
+        )
 
     def legacy_env(self, plugin_id: str) -> dict[str, str]:
         manifest = self.manifest(plugin_id)
@@ -265,7 +267,8 @@ class MarketplaceService:
         visible_steps = [
             step
             for step in manifest.steps
-            if step.kind not in {"validate", "complete"} and self._step_is_visible(step, config=state.config, session=session)
+            if step.kind not in {"validate", "complete"}
+            and self._step_is_visible(step, config=state.config, session=session)
         ]
         summary_sections = self._summary_sections(
             visible_steps=visible_steps,
@@ -499,7 +502,9 @@ class MarketplaceService:
             manifest.config_model.model_validate(dict(state.config))
         except ValidationError as exc:
             for error in exc.errors():
-                issues.append(ValidationIssue(level="error", message=_humanize_validation_error(error, manifest=manifest)))
+                issues.append(
+                    ValidationIssue(level="error", message=_humanize_validation_error(error, manifest=manifest))
+                )
         return issues
 
     def _validate_secrets(self, manifest: OnboardingManifest, state: PluginInstallState) -> list[ValidationIssue]:
@@ -514,13 +519,17 @@ class MarketplaceService:
             try:
                 self.secrets.get(ref)
             except Exception as exc:  # pragma: no cover - defensive I/O path
-                issues.append(ValidationIssue(level="error", message=f"Could not read secret {requirement.title}: {exc}"))
+                issues.append(
+                    ValidationIssue(level="error", message=f"Could not read secret {requirement.title}: {exc}")
+                )
         return issues
 
     def _validate_custom(self, manifest: OnboardingManifest, state: PluginInstallState) -> list[ValidationIssue]:
         if manifest.validator is None:
             return []
-        report = manifest.validator(InstallContext(workspace=self.workspace, service=self, manifest=manifest, state=state))
+        report = manifest.validator(
+            InstallContext(workspace=self.workspace, service=self, manifest=manifest, state=state)
+        )
         return list(report.issues)
 
     def _save_validation(self, plugin_id: str, state: PluginInstallState, report: ValidationReport) -> None:
@@ -559,7 +568,9 @@ class MarketplaceService:
         session.current_step_id = step.id
         session.updated_at = datetime.now(UTC)
         self.store.save_session(session)
-        if step.skippable and not self._should_run_skippable_step(step, config=config, session=session, renderer=renderer):
+        if step.skippable and not self._should_run_skippable_step(
+            step, config=config, session=session, renderer=renderer
+        ):
             self._mark_step_completed(session, step.id)
             return None
         if step.kind == "validate":
@@ -781,7 +792,9 @@ class MarketplaceService:
             entries.append(
                 _render_summary_line(
                     label=field.summary_label or field.title,
-                    value=_secret_status(field.key, secrets_payload=secrets_payload, existing_secret_keys=existing_secret_keys),
+                    value=_secret_status(
+                        field.key, secrets_payload=secrets_payload, existing_secret_keys=existing_secret_keys
+                    ),
                     template=field.summary_template,
                 )
             )
@@ -877,7 +890,9 @@ class MarketplaceService:
             session.completed_step_ids.append(step_id)
 
     @staticmethod
-    def _step_has_existing_values(step: OnboardingStep, *, config: dict[str, Any], session: OnboardingSessionRecord) -> bool:
+    def _step_has_existing_values(
+        step: OnboardingStep, *, config: dict[str, Any], session: OnboardingSessionRecord
+    ) -> bool:
         target_keys = [field.key for field in step.fields]
         if step.result_key:
             target_keys.append(step.result_key)
@@ -887,7 +902,9 @@ class MarketplaceService:
                 return True
         return False
 
-    def _rewind_session(self, session: OnboardingSessionRecord, manifest: OnboardingManifest, step_id: str | None) -> None:
+    def _rewind_session(
+        self, session: OnboardingSessionRecord, manifest: OnboardingManifest, step_id: str | None
+    ) -> None:
         if not step_id:
             return
         seen = False
@@ -1143,10 +1160,14 @@ class MarketplaceService:
         option_by_value = {option.value: option for option in options}
         return [option_by_value[value] for value in selected if value in option_by_value]
 
-    def _step_is_visible(self, step: OnboardingStep, *, config: dict[str, Any], session: OnboardingSessionRecord) -> bool:
+    def _step_is_visible(
+        self, step: OnboardingStep, *, config: dict[str, Any], session: OnboardingSessionRecord
+    ) -> bool:
         return self._conditions_match(step.when, config=config, session=session)
 
-    def _field_is_visible(self, field: OnboardingField, *, config: dict[str, Any], session: OnboardingSessionRecord) -> bool:
+    def _field_is_visible(
+        self, field: OnboardingField, *, config: dict[str, Any], session: OnboardingSessionRecord
+    ) -> bool:
         return self._conditions_match(field.when, config=config, session=session)
 
     def _interactive_step_errors(
@@ -1254,7 +1275,7 @@ def _humanize_validation_error(error: Mapping[str, Any], *, manifest: Onboarding
 
 def _strip_value_error_prefix(message: str) -> str:
     prefix = "Value error, "
-    return message[len(prefix):] if message.startswith(prefix) else message
+    return message[len(prefix) :] if message.startswith(prefix) else message
 
 
 def _humanize_global_validation_message(message: str) -> str:
@@ -1263,9 +1284,7 @@ def _humanize_global_validation_message(message: str) -> str:
         return "Provider priority can only include search providers that are enabled. Go back and enable them first."
     if "enabled_providers must include at least one provider" in normalized:
         return "Select at least one search provider."
-    if "incompatible with responses" in normalized or (
-        "chat-completions" in normalized and "responses" in normalized
-    ):
+    if "incompatible with responses" in normalized or ("chat-completions" in normalized and "responses" in normalized):
         return (
             "This API base cannot be used with API format 'responses'. "
             "Switch API format to 'messages' or use a Responses-compatible base URL."

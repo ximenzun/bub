@@ -66,9 +66,7 @@ class BubFramework:
 
         manifests = self.get_onboarding_manifests()
         enabled_plugins = {
-            plugin_id
-            for plugin_id, state in self.get_marketplace_service().states().items()
-            if state.enabled
+            plugin_id for plugin_id, state in self.get_marketplace_service().states().items() if state.enabled
         }
         runtime_requirements: dict[str, set[str]] = {}
         for manifest in manifests.values():
