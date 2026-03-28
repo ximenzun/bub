@@ -39,8 +39,8 @@ class Agent:
     """Agent that processes prompts using hooks and tools. Backed by republic."""
 
     def __init__(self, framework: BubFramework) -> None:
-        self.settings = _load_runtime_settings()
         self.framework = framework
+        self.settings = _load_runtime_settings(framework)
 
     @cached_property
     def tapes(self) -> TapeService:
@@ -316,8 +316,15 @@ def _build_llm(settings: AgentSettings, tape_store: AsyncTapeStore) -> LLM:
     )
 
 
-def _load_runtime_settings() -> AgentSettings:
-    return AgentSettings.from_env()
+def _load_runtime_settings(framework: BubFramework) -> AgentSettings:
+    settings = AgentSettings(home=framework.home)
+    try:
+        runtime = framework.get_marketplace_service().load_runtime("agent")
+    except KeyError:
+        return settings
+    if not isinstance(runtime, dict) or not runtime:
+        return settings
+    return settings.model_copy(update=runtime)
 
 
 @dataclass(frozen=True)

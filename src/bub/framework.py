@@ -12,6 +12,7 @@ from loguru import logger
 from republic import AsyncTapeStore
 from republic.tape import TapeStore
 
+from bub.builtin.settings import DEFAULT_HOME
 from bub.envelope import content_of, field_of, unpack_batch
 from bub.hook_runtime import HookRuntime
 from bub.hookspecs import BUB_HOOK_NAMESPACE, BubHookSpecs
@@ -21,6 +22,9 @@ if TYPE_CHECKING:
     from bub.channels.base import Channel
     from bub.channels.control import ChannelControl
     from bub.commands import SlashCommandSpec
+    from bub.onboarding import MarketplaceService, OnboardingManifest
+    from bub.onboarding.bundle import WorkspaceBundleService
+    from bub.onboarding.registry import PluginRegistryEntry
 
 
 @dataclass(frozen=True)
@@ -34,11 +38,16 @@ class BubFramework:
 
     def __init__(self) -> None:
         self.workspace = Path.cwd().resolve()
+        self.home = DEFAULT_HOME
+        self._runtime_revision: str | None = None
+        self._outbound_router: OutboundChannelRouter | None = None
+        self._reset_hooks()
+
+    def _reset_hooks(self) -> None:
         self._plugin_manager = pluggy.PluginManager(BUB_HOOK_NAMESPACE)
         self._plugin_manager.add_hookspecs(BubHookSpecs)
         self._hook_runtime = HookRuntime(self._plugin_manager)
         self._plugin_status: dict[str, PluginStatus] = {}
-        self._outbound_router: OutboundChannelRouter | None = None
 
     def _load_builtin_hooks(self) -> None:
         from bub.builtin.hook_impl import BuiltinImpl
@@ -52,11 +61,27 @@ class BubFramework:
         else:
             self._plugin_status["builtin"] = PluginStatus(is_success=True)
 
-    def load_hooks(self) -> None:
+    def _load_external_hooks(self) -> None:
         import importlib.metadata
 
-        self._load_builtin_hooks()
+        manifests = self.get_onboarding_manifests()
+        enabled_plugins = {
+            plugin_id
+            for plugin_id, state in self.get_marketplace_service().states().items()
+            if state.enabled
+        }
+        runtime_requirements: dict[str, set[str]] = {}
+        for manifest in manifests.values():
+            runtime_name = manifest.entry_point_name or manifest.plugin_id
+            runtime_requirements.setdefault(runtime_name, set()).add(manifest.plugin_id)
         for entry_point in importlib.metadata.entry_points(group="bub"):
+            required_plugin_ids = runtime_requirements.get(entry_point.name, set())
+            if required_plugin_ids and not (required_plugin_ids & enabled_plugins):
+                self._plugin_status[entry_point.name] = PluginStatus(
+                    is_success=False,
+                    detail="runtime skipped because the plugin is not installed/enabled in the workspace",
+                )
+                continue
             try:
                 plugin = entry_point.load()
                 if callable(plugin):  # Support entry points that are classes
@@ -68,6 +93,28 @@ class BubFramework:
             else:
                 self._plugin_status[entry_point.name] = PluginStatus(is_success=True)
 
+    def load_hooks(self) -> None:
+        self._reset_hooks()
+        self._load_builtin_hooks()
+        self._load_external_hooks()
+        self._runtime_revision = self.runtime_revision()
+
+    def runtime_revision(self) -> str:
+        from bub.workspace import workspace_paths
+
+        state_path = workspace_paths(self.workspace, self.home).control_dir / "marketplace.json"
+        if not state_path.exists():
+            return f"{state_path}:missing"
+        stat = state_path.stat()
+        return f"{state_path}:{stat.st_mtime_ns}:{stat.st_size}"
+
+    def sync_runtime(self) -> bool:
+        revision = self.runtime_revision()
+        if self._runtime_revision == revision:
+            return False
+        self.load_hooks()
+        return True
+
     def create_cli_app(self) -> typer.Typer:
         """Create CLI app by collecting commands from hooks. Can be used for custom CLI entry point."""
         app = typer.Typer(name="bub", help="Batteries-included, hook-first AI framework", add_completion=False)
@@ -76,9 +123,12 @@ class BubFramework:
         def _main(
             ctx: typer.Context,
             workspace: str | None = typer.Option(None, "--workspace", "-w", help="Path to the workspace"),
+            home: str | None = typer.Option(None, "--home", help="Path to Bub home/state directory"),
         ) -> None:
             if workspace:
                 self.workspace = Path(workspace).resolve()
+            if home:
+                self.home = Path(home).expanduser().resolve()
             ctx.obj = self
 
         self._hook_runtime.call_many_sync("register_cli_commands", app=app)
@@ -220,6 +270,61 @@ class BubFramework:
                 if control.channel not in controls:
                     controls[control.channel] = control
         return controls
+
+    def get_onboarding_manifests(self) -> dict[str, OnboardingManifest]:
+        manifests: dict[str, OnboardingManifest] = {}
+        for result in self._hook_runtime.call_many_sync("provide_onboarding_manifests"):
+            for manifest in result:
+                if manifest.plugin_id not in manifests:
+                    manifests[manifest.plugin_id] = manifest
+        for manifest in self._load_manifest_entry_points():
+            if manifest.plugin_id not in manifests:
+                manifests[manifest.plugin_id] = manifest
+        return manifests
+
+    def get_marketplace_service(self) -> MarketplaceService:
+        from bub.onboarding import MarketplaceService
+
+        return MarketplaceService(
+            workspace=self.workspace,
+            home=self.home,
+            manifests=self.get_onboarding_manifests().values(),
+        )
+
+    def get_workspace_bundle_service(self) -> WorkspaceBundleService:
+        from bub.onboarding.bundle import WorkspaceBundleService
+
+        return WorkspaceBundleService(
+            workspace=self.workspace,
+            home=self.home,
+            marketplace=self.get_marketplace_service(),
+        )
+
+    def plugin_status(self) -> dict[str, PluginStatus]:
+        return dict(self._plugin_status)
+
+    def get_registry_entries(self) -> dict[str, PluginRegistryEntry]:
+        from bub.onboarding.registry import builtin_registry_entries
+
+        return {entry.plugin_id: entry for entry in builtin_registry_entries()}
+
+    @staticmethod
+    def _load_manifest_entry_points() -> list[OnboardingManifest]:
+        import importlib.metadata
+
+        manifests: list[OnboardingManifest] = []
+        for entry_point in importlib.metadata.entry_points(group="bub.manifests"):
+            try:
+                loaded = entry_point.load()
+                value = loaded() if callable(loaded) else loaded
+            except Exception:
+                logger.warning("Failed to load manifest entry point '{}'", entry_point.name)
+                continue
+            if isinstance(value, list):
+                manifests.extend(item for item in value if getattr(item, "plugin_id", None))
+            elif getattr(value, "plugin_id", None):
+                manifests.append(value)
+        return manifests
 
     def get_tape_store(self) -> TapeStore | AsyncTapeStore | None:
         return self._hook_runtime.call_first_sync("provide_tape_store")

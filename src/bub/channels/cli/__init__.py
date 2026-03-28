@@ -2,7 +2,6 @@ import asyncio
 import contextlib
 from collections.abc import AsyncGenerator
 from datetime import datetime
-from hashlib import md5
 from pathlib import Path
 
 from prompt_toolkit import PromptSession
@@ -21,6 +20,7 @@ from bub.channels.message import ChannelMessage
 from bub.envelope import content_of, field_of
 from bub.tools import REGISTRY
 from bub.types import MessageHandler
+from bub.workspace import workspace_id_for_path
 
 
 class CliChannel(Channel):
@@ -170,5 +170,4 @@ class CliChannel(Channel):
 
     @staticmethod
     def _history_file(home: Path, workspace: Path) -> Path:
-        workspace_hash = md5(str(workspace).encode("utf-8"), usedforsecurity=False).hexdigest()
-        return home / "history" / f"{workspace_hash}.history"
+        return home / "history" / f"{workspace_id_for_path(workspace, home)}.history"

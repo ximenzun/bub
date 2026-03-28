@@ -1,26 +1,20 @@
 from __future__ import annotations
 
-import os
 import pathlib
-import re
 from typing import Literal
 from urllib.parse import urlparse
 
-from pydantic import Field, model_validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
+from pydantic import BaseModel, Field, model_validator
 
 DEFAULT_MODEL = "openrouter:qwen/qwen3-coder-next"
 DEFAULT_MAX_TOKENS = 1024
 DEFAULT_HOME = pathlib.Path.home() / ".bub"
 
 
-class AgentSettings(BaseSettings):
-    """Configuration settings for the Agent, loaded from environment variables with prefix BUB_ or from a .env file."""
-
-    model_config = SettingsConfigDict(env_prefix="BUB_", env_parse_none_str="null", extra="ignore", env_file=".env")
+class AgentSettings(BaseModel):
+    """Strict runtime settings for Bub's builtin agent."""
 
     home: pathlib.Path = Field(default=DEFAULT_HOME)
-
     model: str = DEFAULT_MODEL
     fallback_model: str | None = None
     api_key: str | dict[str, str] | None = None
@@ -37,40 +31,8 @@ class AgentSettings(BaseSettings):
         path = urlparse(self.api_base).path.casefold()
         if "chat-completions" in path:
             raise ValueError(
-                "BUB_API_FORMAT=responses is incompatible with a chat-completions endpoint base URL. "
-                "Use BUB_API_FORMAT=messages for chat-completions-style providers, "
-                "or point BUB_API_BASE at a Responses-compatible root base URL instead."
+                "api_format=responses is incompatible with a chat-completions endpoint base URL. "
+                "Use api_format=messages for chat-completions-style providers, "
+                "or point api_base at a Responses-compatible root base URL instead."
             )
         return self
-
-    @classmethod
-    def from_env(cls) -> AgentSettings:
-        from dotenv import dotenv_values
-
-        key_regex = re.compile(r"^BUB_(.+)_API_KEY$")
-        base_regex = re.compile(r"^BUB_(.+)_API_BASE$")
-
-        loaded_env = dotenv_values(".env")
-        loaded_env.update(os.environ)
-
-        api_key: str | dict[str, str] | None = loaded_env.get("BUB_API_KEY")
-        api_base: str | dict[str, str] | None = loaded_env.get("BUB_API_BASE")
-        if api_key and api_base:
-            return cls()
-
-        if api_key is None:
-            api_key = {}
-        if api_base is None:
-            api_base = {}
-
-        for key, value in loaded_env.items():
-            if value is None:
-                continue
-            if isinstance(api_key, dict) and (match := key_regex.match(key)):
-                provider = match.group(1).lower()
-                api_key[provider] = value
-            if isinstance(api_base, dict) and (match := base_regex.match(key)):
-                provider = match.group(1).lower()
-                api_base[provider] = value
-
-        return cls(api_key=api_key or None, api_base=api_base or None)

@@ -22,10 +22,13 @@ from bub.builtin.resource_refs import (
     coerce_resource_refs,
 )
 from bub.channels.base import Channel
+from bub.channels.control import ChannelAccountStatus, ChannelControl, ChannelLoginRequest, ChannelLoginResult
 from bub.channels.message import ChannelMessage, MediaItem, MessageKind
 from bub.envelope import content_of, field_of
 from bub.framework import BubFramework
 from bub.hookspecs import hookimpl
+from bub.onboarding.catalog import builtin_marketplace_manifests
+from bub.onboarding.models import OnboardingManifest
 from bub.social.types import Attachment
 from bub.types import Envelope, MessageHandler, State
 from bub.utils import workspace_from_state
@@ -70,7 +73,15 @@ class BuiltinImpl:
         from bub.builtin import tools  # noqa: F401
 
         self.framework = framework
-        self.agent = Agent(framework)
+        self.agent: Agent | None = None
+
+    def _agent_instance(self) -> Agent:
+        if self.agent is None:
+            self.agent = Agent(self.framework)
+        return self.agent
+
+    def _marketplace(self):
+        return self.framework.get_marketplace_service()
 
     @hookimpl
     def resolve_session(self, message: ChannelMessage) -> str:
@@ -89,7 +100,7 @@ class BuiltinImpl:
         inbound_context = dict(field_of(message, "context", {}) or {})
         state = {
             "session_id": session_id,
-            "_runtime_agent": self.agent,
+            "_runtime_agent": self._agent_instance(),
             "_inbound_message": message,
             "_inbound_channel": field_of(message, "channel", "default"),
             "_inbound_output_channel": field_of(message, "output_channel", field_of(message, "channel", "default")),
@@ -128,7 +139,7 @@ class BuiltinImpl:
             message.kind = "command"
             return content
         text = content
-        quoted = await _quoted_prompt_context(self.agent, message=message, session_id=session_id, state=state)
+        quoted = await _quoted_prompt_context(self._agent_instance(), message=message, session_id=session_id, state=state)
 
         media = field_of(message, "media") or []
         attachments = field_of(message, "attachments") or []
@@ -137,7 +148,7 @@ class BuiltinImpl:
         state.pop("_inbound_resource_refs", None)
         if not media and not attachments:
             if _should_restore_recent_image(content):
-                recent_refs = await _recent_image_refs(self.agent, session_id=session_id, state=state)
+                recent_refs = await _recent_image_refs(self._agent_instance(), session_id=session_id, state=state)
                 restored_parts = await _image_parts_from_refs(recent_refs)
                 if restored_parts:
                     state["_inbound_media_parts"] = _clone_image_parts(restored_parts)
@@ -167,7 +178,7 @@ class BuiltinImpl:
 
     @hookimpl
     async def run_model(self, prompt: str | list[dict], session_id: str, state: State) -> str:
-        return await self.agent.run(session_id=session_id, prompt=prompt, state=state)
+        return await self._agent_instance().run(session_id=session_id, prompt=prompt, state=state)
 
     @hookimpl
     def register_cli_commands(self, app: typer.Typer) -> None:
@@ -185,6 +196,21 @@ class BuiltinImpl:
         channels_app.command("login")(cli.channels_login)
         channels_app.command("logout")(cli.channels_logout)
         app.add_typer(channels_app, name="channels")
+        marketplace_app = typer.Typer(help="Manage Bub V2 onboarding marketplace entries.")
+        marketplace_app.command("list")(cli.marketplace_list)
+        marketplace_app.command("show")(cli.marketplace_show)
+        marketplace_app.command("status")(cli.marketplace_status)
+        marketplace_app.command("install")(cli.marketplace_install)
+        marketplace_app.command("validate")(cli.marketplace_validate)
+        marketplace_app.command("uninstall")(cli.marketplace_uninstall)
+        marketplace_app.command("test-plan")(cli.marketplace_test_plan)
+        app.add_typer(marketplace_app, name="marketplace")
+        workspace_app = typer.Typer(help="Manage workspace identity, export, import, and portability checks.")
+        workspace_app.command("status")(cli.workspace_status)
+        workspace_app.command("doctor")(cli.workspace_doctor)
+        workspace_app.command("export")(cli.workspace_export)
+        workspace_app.command("import")(cli.workspace_import)
+        app.add_typer(workspace_app, name="workspace")
         app.command("hooks", hidden=True)(cli.list_hooks)
         app.command("message", hidden=True)(app.command("gateway")(cli.gateway))
 
@@ -210,13 +236,56 @@ class BuiltinImpl:
 
         slash_commands = [(command.name, command.summary) for command in self.framework.get_slash_commands()]
         try:
-            telegram = TelegramChannel(on_receive=message_handler, slash_commands=slash_commands)
+            telegram_runtime = self._marketplace().load_runtime("telegram")
+        except KeyError:
+            telegram_runtime = None
+        try:
+            telegram = TelegramChannel(
+                on_receive=message_handler,
+                slash_commands=slash_commands,
+                settings_override=telegram_runtime,
+            )
         except TypeError:
-            telegram = TelegramChannel(on_receive=message_handler)
+            try:
+                telegram = TelegramChannel(on_receive=message_handler, settings_override=telegram_runtime)
+            except TypeError:
+                telegram = TelegramChannel(on_receive=message_handler)
         return [
             telegram,
-            CliChannel(on_receive=message_handler, agent=self.agent),
+            CliChannel(on_receive=message_handler, agent=self._agent_instance()),
         ]
+
+    @hookimpl
+    def provide_channel_controls(self) -> list[ChannelControl]:
+        controls: list[ChannelControl] = []
+        for manifest in self.framework.get_onboarding_manifests().values():
+            if manifest.channel_name is None:
+                continue
+            controls.append(self._channel_control(manifest))
+        return controls
+
+    @hookimpl
+    def provide_onboarding_manifests(self) -> list[OnboardingManifest]:
+        return builtin_marketplace_manifests()
+
+    def _channel_control(self, manifest: OnboardingManifest) -> ChannelControl:
+        def status_handler() -> list[ChannelAccountStatus]:
+            return _manifest_status(self._marketplace(), manifest)
+
+        def login_handler(request: ChannelLoginRequest) -> ChannelLoginResult:
+            return _manifest_login(self._marketplace(), manifest, request)
+
+        def logout_handler(account_id: str | None, force: bool) -> list[str]:
+            return _manifest_logout(self._marketplace(), manifest, account_id, force)
+
+        return ChannelControl(
+            channel=manifest.channel_name or manifest.plugin_id,
+            summary=manifest.summary,
+            capabilities=manifest.capabilities or _basic_capabilities(manifest.channel_name or manifest.plugin_id),
+            status_handler=status_handler,
+            login_handler=login_handler,
+            logout_handler=logout_handler,
+        )
 
     @hookimpl
     async def on_error(self, stage: str, error: Exception, message: Envelope | None) -> None:
@@ -260,7 +329,7 @@ class BuiltinImpl:
     def provide_tape_store(self) -> TapeStore:
         from bub.builtin.store import FileTapeStore
 
-        return FileTapeStore(directory=self.agent.settings.home / "tapes")
+        return FileTapeStore(directory=self._agent_instance().settings.home / "tapes")
 
     def _build_outbound_message(
         self,
@@ -329,6 +398,85 @@ def _default_outbound_context(message: Envelope) -> dict[str, object]:
             outbound["reply_to_message_id"] = reply_to
 
     return outbound
+
+
+def _basic_capabilities(platform: str):
+    from bub.social import basic_channel_capabilities
+
+    return basic_channel_capabilities(platform)
+
+
+def _manifest_status(marketplace, manifest: OnboardingManifest) -> list[ChannelAccountStatus]:
+    state = marketplace.state(manifest.plugin_id)
+    if state is None:
+        return [
+            ChannelAccountStatus(
+                channel=manifest.channel_name or manifest.plugin_id,
+                configured=False,
+                running=False,
+                state="missing",
+                detail="Not installed via Bub V2 marketplace.",
+            )
+        ]
+    report = marketplace.validate(manifest.plugin_id)
+    runtime_available = manifest.runtime_is_available()
+    return [
+        ChannelAccountStatus(
+            channel=manifest.channel_name or manifest.plugin_id,
+            configured=report.ok,
+            running=runtime_available if report.ok else False,
+            state="active" if report.ok and runtime_available else ("configured" if report.ok else "error"),
+            detail=report.summary,
+            metadata={"plugin_id": manifest.plugin_id, "runtime_available": runtime_available},
+        )
+    ]
+
+
+def _manifest_login(marketplace, manifest: OnboardingManifest, request: ChannelLoginRequest) -> ChannelLoginResult:
+    from bub.onboarding import OnboardingCancelledError, renderer_for_surface
+
+    current = marketplace.state(manifest.plugin_id)
+    if current is not None and not request.force:
+        return ChannelLoginResult(
+            channel=manifest.channel_name or manifest.plugin_id,
+            account_id=request.account_id or "default",
+            changed=False,
+            lines=(
+                f"{manifest.plugin_id}: already installed",
+                "use --force to re-run onboarding",
+            ),
+        )
+    try:
+        state = marketplace.install_interactive(
+            manifest.plugin_id,
+            surface="cli",
+            renderer=renderer_for_surface("cli"),
+        )
+    except OnboardingCancelledError:
+        return ChannelLoginResult(
+            channel=manifest.channel_name or manifest.plugin_id,
+            account_id=request.account_id or "default",
+            changed=False,
+            lines=("login: cancelled",),
+        )
+    report = marketplace.validate(manifest.plugin_id)
+    lines = (
+        "login: ok",
+        f"plugin_id: {manifest.plugin_id}",
+        f"enabled: {state.enabled}",
+        f"validation: {report.summary}",
+    )
+    return ChannelLoginResult(
+        channel=manifest.channel_name or manifest.plugin_id,
+        account_id=request.account_id or "default",
+        changed=True,
+        lines=lines,
+    )
+
+
+def _manifest_logout(marketplace, manifest: OnboardingManifest, account_id: str | None, force: bool) -> list[str]:
+    marketplace.uninstall(manifest.plugin_id)
+    return [f"logout: {manifest.plugin_id} force={force}"]
 
 
 def _context_string(context: dict[str, object], key: str) -> str | None:
