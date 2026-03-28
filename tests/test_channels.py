@@ -14,6 +14,7 @@ from bub.channels.manager import ChannelManager
 from bub.channels.message import ChannelMessage
 from bub.channels.telegram import BubMessageFilter, TelegramChannel, TelegramMessageParser
 from bub.social import Attachment, ConversationRef, LiveSurfaceRef, MentionTarget, OutboundAction, ReplyGrant
+from bub.workspace import workspace_id_for_path
 
 
 class FakeChannel:
@@ -50,6 +51,74 @@ class FakeFramework:
 
     def bind_outbound_router(self, router) -> None:
         self.router = router
+
+
+class RefreshingFramework(FakeFramework):
+    def __init__(self, channels: dict[str, FakeChannel], refreshed_channels: dict[str, FakeChannel]) -> None:
+        super().__init__(channels)
+        self._refreshed_channels = refreshed_channels
+        self._should_refresh = False
+
+    def get_channels(self, message_handler):
+        self.message_handler = message_handler
+        return self._refreshed_channels if self._should_refresh else self._channels
+
+    def sync_runtime(self) -> bool:
+        if not self._should_refresh:
+            return False
+        self._should_refresh = False
+        self._channels = self._refreshed_channels
+        return True
+
+
+class RebuildingFramework(FakeFramework):
+    def __init__(self) -> None:
+        super().__init__({"lark": FakeChannel("lark")})
+
+    def get_channels(self, message_handler):
+        self.message_handler = message_handler
+        return {"lark": FakeChannel("lark")}
+
+    def sync_runtime(self) -> bool:
+        return False
+
+
+class MarketplaceRefreshingFramework(FakeFramework):
+    def __init__(
+        self,
+        channels: dict[str, FakeChannel],
+        refreshed_channels: dict[str, FakeChannel],
+        *,
+        channel_plugin_id: str = "lark_plugin",
+    ) -> None:
+        super().__init__(channels)
+        self._refreshed_channels = refreshed_channels
+        self._should_refresh = False
+        self._channel_plugin_id = channel_plugin_id
+        self._channel_revision = 1
+
+    def get_channels(self, message_handler):
+        self.message_handler = message_handler
+        return self._refreshed_channels if self._should_refresh else self._channels
+
+    def sync_runtime(self) -> bool:
+        if not self._should_refresh:
+            return False
+        self._should_refresh = False
+        self._channels = self._refreshed_channels
+        return True
+
+    def get_marketplace_service(self):
+        return SimpleNamespace(
+            load_runtime=lambda plugin_id: {} if plugin_id == "channel_manager" else None,
+            enabled_channels=lambda: ["lark"],
+            manifests=lambda: [SimpleNamespace(plugin_id=self._channel_plugin_id, channel_name="lark")],
+            state=lambda plugin_id: (
+                SimpleNamespace(enabled=True, updated_at=f"rev-{self._channel_revision}")
+                if plugin_id == self._channel_plugin_id
+                else None
+            ),
+        )
 
 
 def _message(
@@ -113,6 +182,83 @@ async def test_channel_manager_dispatch_uses_output_channel_and_preserves_metada
     assert outbound.content == "hello"
     assert outbound.kind == "command"
     assert outbound.context["source"] == "test"
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_refresh_runtime_starts_new_enabled_channel() -> None:
+    telegram = FakeChannel("telegram")
+    lark = FakeChannel("lark")
+    framework = RefreshingFramework({"telegram": telegram}, {"telegram": telegram, "lark": lark})
+    manager = ChannelManager(framework, enabled_channels=["telegram", "lark"])
+    stop_event = asyncio.Event()
+
+    await manager._refresh_runtime(stop_event)
+    assert telegram.started is True
+    assert lark.started is False
+
+    framework._should_refresh = True
+    await manager._refresh_runtime(stop_event)
+
+    assert telegram.stopped is False
+    assert lark.started is True
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_does_not_restart_channels_when_runtime_is_unchanged() -> None:
+    framework = RebuildingFramework()
+    manager = ChannelManager(framework, enabled_channels=["lark"])
+    stop_event = asyncio.Event()
+
+    await manager._refresh_runtime(stop_event)
+    first_channel = manager.get_channel("lark")
+    assert first_channel is not None
+    assert first_channel.started is True
+
+    await manager._refresh_runtime(stop_event)
+
+    same_channel = manager.get_channel("lark")
+    assert same_channel is first_channel
+    assert first_channel.stopped is False
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_runtime_reload_keeps_existing_channel_when_revision_is_unchanged() -> None:
+    first_channel = FakeChannel("lark")
+    second_channel = FakeChannel("lark")
+    framework = MarketplaceRefreshingFramework({"lark": first_channel}, {"lark": second_channel})
+    manager = ChannelManager(framework)
+    stop_event = asyncio.Event()
+
+    await manager._refresh_runtime(stop_event)
+    assert manager.get_channel("lark") is first_channel
+    assert first_channel.started is True
+
+    framework._should_refresh = True
+    await manager._refresh_runtime(stop_event)
+
+    assert manager.get_channel("lark") is first_channel
+    assert first_channel.stopped is False
+    assert second_channel.started is False
+
+
+@pytest.mark.asyncio
+async def test_channel_manager_runtime_reload_restarts_channel_when_channel_revision_changes() -> None:
+    first_channel = FakeChannel("lark")
+    second_channel = FakeChannel("lark")
+    framework = MarketplaceRefreshingFramework({"lark": first_channel}, {"lark": second_channel})
+    manager = ChannelManager(framework)
+    stop_event = asyncio.Event()
+
+    await manager._refresh_runtime(stop_event)
+    assert manager.get_channel("lark") is first_channel
+
+    framework._channel_revision = 2
+    framework._should_refresh = True
+    await manager._refresh_runtime(stop_event)
+
+    assert first_channel.stopped is True
+    assert second_channel.started is True
+    assert manager.get_channel("lark") is second_channel
 
 
 @pytest.mark.asyncio
@@ -388,14 +534,16 @@ async def test_cli_channel_send_routes_by_message_kind() -> None:
     assert events == [("error", "bad"), ("command", "ok"), ("assistant", "hi")]
 
 
-def test_cli_channel_history_file_uses_workspace_hash(tmp_path: Path) -> None:
+def test_cli_channel_history_file_uses_workspace_id(tmp_path: Path) -> None:
     home = tmp_path / "home"
     workspace = tmp_path / "workspace"
+    workspace.mkdir()
 
     result = CliChannel._history_file(home, workspace)
 
     assert result.parent == home / "history"
     assert result.suffix == ".history"
+    assert result.stem == workspace_id_for_path(workspace, home)
 
 
 def test_bub_message_filter_accepts_private_messages() -> None:
